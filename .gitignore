@@ -1,0 +1,14 @@
+**/__pycache__/
+*.py[cod]
+assets/
+build/
+dist/
+*.egg-info/
+.vscode/
+.DS_Store
+.env
+.idea/
+*.log
+
+/syntra_logs
+checkpoints/
