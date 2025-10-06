@@ -45,9 +45,9 @@ class BatchedSrcTgtDatapoint:
     """
 
     img_batch: torch.FloatTensor
-    obj_to_frame_idx: torch.IntTensor
-    masks: torch.BoolTensor
-    metadata: BatchedSrcTgtMetaData
+    src_mask_batch: torch.BoolTensor
+    tgt_mask_batch: torch.BoolTensor
+    metadata: Optional[BatchedSrcTgtMetaData]
 
     dict_key: str
 
@@ -66,17 +66,15 @@ class BatchedSrcTgtDatapoint:
         """
         Returns the number of tgt images in the batch.
         """
-        return self.img_batch.shape[1]
+        return self.tgt_mask_batch.shape[1]
+    
 
     @property
-    def flat_obj_to_img_idx(self) -> torch.IntTensor:
+    def num_src(self) -> int:
         """
-        Returns a flattened tensor containing the object to img index.
-        The flat index can be used to access a flattened img_batch of shape [(T*B)xCxHxW]
+        Returns the number of tgt images in the batch.
         """
-        frame_idx, tgt_idx = self.obj_to_frame_idx.unbind(dim=-1)
-        flat_idx = tgt_idx * self.num_frames + frame_idx
-        return flat_idx
+        return self.src_mask_batch.shape[1]
 
     @property
     def flat_img_batch(self) -> torch.FloatTensor:
@@ -84,7 +82,22 @@ class BatchedSrcTgtDatapoint:
         Returns a flattened img_batch_tensor of shape [(B*T)xCxHxW]
         """
 
-        return self.img_batch.transpose(0, 1).flatten(0, 1)
+        return self.img_batch.flatten(0, 1)
+    
+    @property
+    def flat_src_mask_batch(self) -> torch.BoolTensor:
+        """
+        Returns a flattened src_mask_batch of shape [(B*(T-1))*Nx1xHxW]
+        """
+
+        return self.src_mask_batch.flatten(0, 2).unsqueeze(1)
+    
+    @property
+    def input_size(self) -> Tuple[int, int]:
+        """
+        Returns the height and width of the input images.
+        """
+        return self.img_batch.shape[-2], self.img_batch.shape[-1]
 
 
 @dataclass
@@ -105,8 +118,50 @@ class SrcTgtDatapoint:
     """Refers to an image/video and all its annotations"""
 
     frames: List[Frame]
-    tgt_id: int
+    target_id: int
+    notion_size: int
+    valid_src_notion_ids: List[int]
     size: Tuple[int, int]
+
+
+def visualize_batch(batch: BatchedSrcTgtDatapoint):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import os
+    # colors for different classes
+    colors = [
+    (34, 139, 34),    # 'wald' (forest): Forest Green
+    (124, 252, 0),    # 'grünland' (grassland): Lawn Green
+    (220, 20, 60),    # 'siedlung' (settlement): Crimson
+    (30, 144, 255),   # 'fließgewässer' (flowing water): Dodger Blue
+    (0, 191, 255)     # 'stillgewässer' (still water): Deep Sky Blue
+    ]
+
+    B = len(batch)
+    T = len(batch[0].frames)
+    # each batch contains T images and T label masks, the 1st in T is the target frame, the rest are source frames
+    fig, axs = plt.subplots(B * 2, T, figsize=(T * 5, B * 5 * 2))
+    for b in range(B):
+       frames = batch[b].frames
+       # plot images
+       for t in range(T):
+           img = np.array(frames[t].data.permute(1, 2, 0))
+           axs[b * 2, t].imshow(img)
+           axs[b * 2, t].axis('off')
+       # plot masks
+       for t in range(T):
+           rgb_mask = np.zeros((*img.shape[:2], 3), dtype=np.uint8)
+           for n in frames[t].notions:
+               # convert binary mask to rgb mask
+               mask = n.segment.bool().numpy()
+               color = colors[n.cls_id % len(colors)]
+               rgb_mask[mask] = list(color)
+            
+           axs[b * 2 + 1, t].imshow(rgb_mask)
+           axs[b * 2 + 1, t].axis('off')
+    plt.tight_layout()
+    plt.savefig(f"{os.environ.get('HOME')}/Downloads/batch_visualization.png")
+    plt.close()
 
 
 def collate_fn(
@@ -118,60 +173,38 @@ def collate_fn(
         batch: A list of SrcTgtDatapoint instances.
         dict_key (str): A string key used to identify the batch.
     """
+    # visualize_batch(batch)
     img_batch = []
+    tgt_msk_batch = []
+    src_msk_batch = []
     for tgt in batch:
         img_batch += [torch.stack([frame.data for frame in tgt.frames], dim=0)]
+        valid_notion_ids = tgt.valid_src_notion_ids
+        h, w = tgt.size
+        # collect target masks
+        tgt_masks = torch.zeros((tgt.notion_size, h, w), dtype=torch.bool)
+        for n in tgt.frames[0].notions:
+            if n.cls_id in valid_notion_ids:
+                tgt_masks[n.cls_id] = n.segment.to(torch.bool)
+        tgt_msk_batch.append(tgt_masks)
+        # collect source masks
+        src_masks = torch.zeros(((len(tgt.frames) - 1), tgt.notion_size, h, w), dtype=torch.bool)
+        for i, frame in enumerate(tgt.frames[1:]):
+            for n in frame.notions:
+                if n.cls_id in valid_notion_ids:
+                    src_masks[i, valid_notion_ids.index(n.cls_id)] = n.segment.to(torch.bool)
+        src_msk_batch.append(src_masks)
 
-    img_batch = torch.stack(img_batch, dim=0).permute((1, 0, 2, 3, 4))
-    T = img_batch.shape[0]
-    # Prepare data structures for sequential processing. Per-frame processing but batched across videos.
-    step_t_objects_identifier = [[] for _ in range(T)]
-    step_t_frame_orig_size = [[] for _ in range(T)]
-
-    step_t_masks = [[] for _ in range(T)]
-    step_t_obj_to_frame_idx = [
-        [] for _ in range(T)
-    ]  # List to store frame indices for each time step
-
-    for tgt_idx, tgt in enumerate(batch):
-        orig_tgt_id = tgt.tgt_id
-        orig_frame_size = tgt.size
-        for t, frame in enumerate(tgt.frames):
-            objects = frame.objects
-            for obj in objects:
-                orig_obj_id = obj.object_id
-                orig_frame_idx = obj.frame_index
-                step_t_obj_to_frame_idx[t].append(
-                    torch.tensor([t, tgt_idx], dtype=torch.int)
-                )
-                step_t_masks[t].append(obj.segment.to(torch.bool))
-                step_t_objects_identifier[t].append(
-                    torch.tensor([orig_tgt_id, orig_obj_id, orig_frame_idx])
-                )
-                step_t_frame_orig_size[t].append(torch.tensor(orig_frame_size))
-
-    obj_to_frame_idx = torch.stack(
-        [
-            torch.stack(obj_to_frame_idx, dim=0)
-            for obj_to_frame_idx in step_t_obj_to_frame_idx
-        ],
-        dim=0,
-    )
-    masks = torch.stack([torch.stack(masks, dim=0) for masks in step_t_masks], dim=0)
-    objects_identifier = torch.stack(
-        [torch.stack(id, dim=0) for id in step_t_objects_identifier], dim=0
-    )
-    frame_orig_size = torch.stack(
-        [torch.stack(id, dim=0) for id in step_t_frame_orig_size], dim=0
-    )
+    img_batch = torch.stack(img_batch, dim=0) # BxTxCxHxW
+    tgt_msk_batch = torch.stack(tgt_msk_batch, dim=0) # BxNxHxW
+    src_msk_batch = torch.stack(src_msk_batch, dim=0) # Bx(T-1)xNxHxW
+    B = len(batch)
+    
     return BatchedSrcTgtDatapoint(
         img_batch=img_batch,
-        obj_to_frame_idx=obj_to_frame_idx,
-        masks=masks,
-        metadata=BatchedSrcTgtMetaData(
-            unique_objects_identifier=objects_identifier,
-            frame_orig_size=frame_orig_size,
-        ),
+        src_mask_batch=src_msk_batch,
+        tgt_mask_batch=tgt_msk_batch,
+        metadata=None,
         dict_key=dict_key,
-        batch_size=[T],
+        batch_size=[B],
     )

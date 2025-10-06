@@ -77,6 +77,7 @@ class TorchTrainMixedDataset:
         shuffle: bool,
         pin_memory: bool,
         drop_last: bool,
+        distributed: bool = False,
         collate_fn: Optional[Callable] = None,
         worker_init_fn: Optional[Callable] = None,
         phases_per_epoch: int = 1,
@@ -102,6 +103,7 @@ class TorchTrainMixedDataset:
         self.shuffle = shuffle
         self.pin_memory = pin_memory
         self.drop_last = drop_last
+        self.distributed = distributed
         self.collate_fn = collate_fn
         self.worker_init_fn = worker_init_fn
         assert len(self.datasets) > 0
@@ -164,9 +166,14 @@ class TorchTrainMixedDataset:
             else:
                 self._set_dataset_epoch(dataset, epoch)
 
-            sampler = DistributedSampler(dataset, shuffle=self.shuffle)
-            sampler.set_epoch(epoch)
-
+            if self.distributed:
+                sampler = DistributedSampler(dataset, shuffle=self.shuffle) 
+                sampler.set_epoch(epoch)
+            elif self.shuffle:
+                sampler = torch.utils.data.RandomSampler(dataset)
+            else:
+                sampler = torch.utils.data.SequentialSampler(dataset)
+            
             batch_sampler = BatchSampler(sampler, batch_size, drop_last=self.drop_last)
             dataloaders.append(
                 DataLoader(

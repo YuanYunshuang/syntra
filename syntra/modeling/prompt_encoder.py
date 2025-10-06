@@ -80,6 +80,7 @@ class PromptEncoder(nn.Module):
     def forward(
         self,
         src_emb: torch.Tensor,
+        src_pos_emb: torch.Tensor,
         masks: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -94,22 +95,30 @@ class PromptEncoder(nn.Module):
             the number of notions.
         """
 
-        bs = src_emb.shape[0]
-        sparse_embeddings = torch.empty(
-            (bs, 0, self.embed_dim), device=self._get_device()
-        )
-        mask_embeddings = self.mask_downscaling(masks.unsqueeze(-2).float())
+        B, T, N = masks.shape[:3]
+        H, W = src_emb.shape[-2:]
+        L = T * H * W
+        mask_embeddings = self.mask_downscaling(masks.flatten(0, 2).unsqueeze(1))  # (B*T*N)xCxhxw
+        mask_embeddings = mask_embeddings.view(B, T, N, self.embed_dim, *self.image_embedding_size)
 
         # merge src_emb and mask_embeddings 
-        prompt_embeddings = src_emb.unsqueeze(1) * mask_embeddings
+        prompt_embeddings = src_emb.unsqueeze(2) * mask_embeddings
+        prompt_embeddings = prompt_embeddings.permute(0, 2, 1, 4, 5, 3) # BxNxTxHxWxC
+        prompt_embeddings = prompt_embeddings.flatten(0, 1).flatten(1, 3) # (B*N)x(L)xC, L=T*H*W
+
+        src_pos_emb = src_pos_emb.unsqueeze(2).repeat(1, 1, N, 1, 1, 1) # BxTxNxHxWxC
+        src_pos_emb = src_pos_emb.permute(0, 2, 1, 4, 5, 3) # BxNxTxHxWxC
+        src_pos_emb = src_pos_emb.flatten(0, 1).flatten(1, 3) # (B*N)x(L)xC, L=T*H*W
 
         # process notion embeddings with notion attention
-        notion_embeddings = self.notion_embeddings.weight.unsqueeze(0).repeat(bs, 1, 1)
+        notion_embeddings = self.notion_embeddings.weight.unsqueeze(0).repeat(B, 1, 1).unsqueeze(2).flatten(0, 1)  # (B*N)x1xC
         notions = self.notion_attention(
             prompt_embeddings,
             notion_embeddings,
-            curr_pos=self.get_dense_pe().repeat(bs, 1, 1, 1),
+            src_pos_emb,
         )
+
+        notions = notions.squeeze(1).view(B, N, self.embed_dim)
 
         return notions
     

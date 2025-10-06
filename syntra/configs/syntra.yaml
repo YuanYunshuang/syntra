@@ -3,8 +3,8 @@
 scratch:
   resolution: 448
   train_batch_size: 1
-  num_train_workers: 4
-  num_src: 4
+  num_train_workers: 0
+  num_src: 3
   max_num_cls: 4
   base_lr: 5.0e-6
   vision_lr: 3.0e-06
@@ -69,41 +69,38 @@ trainer:
     notion_attention:
       _target_: syntra.modeling.notion_attention.NotionAttention
       d_model: 256
-      pos_enc_at_input: true
-      layer:
-        _target_: syntra.modeling.notion_attention.NotionAttentionLayer
-        activation: relu
-        dim_feedforward: 2048
+      dim_feedforward: 1024
+      num_sa_layers: 4
+      num_ca_layers: 4
+      pos_enc_at_attn: true
+      pos_enc_at_cross_attn_keys: true
+      pos_enc_at_cross_attn_queries: false
+      activation: relu
+      cross_attention:
+        _target_: syntra.modeling.transformer.RoPEAttention
+        rope_theta: 10000.0
+        feat_sizes: [64, 64]
+        rope_k_repeat: True
+        embedding_dim: 256
+        num_heads: 1
+        downsample_rate: 1
         dropout: 0.1
-        pos_enc_at_attn: false
-        self_attention:
-          _target_: syntra.modeling.transformer.RoPEAttention
-          rope_theta: 10000.0
-          feat_sizes: [64, 64]
-          embedding_dim: 256
-          num_heads: 1
-          downsample_rate: 1
-          dropout: 0.1
-        d_model: 256
-        pos_enc_at_cross_attn_keys: true
-        pos_enc_at_cross_attn_queries: false
-        cross_attention:
-          _target_: syntra.modeling.transformer.RoPEAttention
-          rope_theta: 10000.0
-          feat_sizes: [64, 64]
-          rope_k_repeat: True
-          embedding_dim: 256
-          num_heads: 1
-          downsample_rate: 1
-          dropout: 0.1
-          kv_in_dim: 64
-      num_layers: 4
+        kv_in_dim: 256
+      self_attention: 
+        _target_: syntra.modeling.transformer.RoPEAttention
+        rope_theta: 10000.0
+        feat_sizes: [64, 64]
+        embedding_dim: 256
+        num_heads: 1
+        downsample_rate: 1
+        dropout: 0.1
 
   data:
     train:
       _target_: training.dataset.syntra_datasets.TorchTrainMixedDataset
       phases_per_epoch: ${scratch.phases_per_epoch}
       batch_sizes:
+        - ${scratch.train_batch_size}
         - ${scratch.train_batch_size}
 
       datasets:
@@ -113,6 +110,7 @@ trainer:
             datasets:
             - _target_: training.dataset.syntra_dataset.SynTraDataset
               transforms: ${syntra.train_transforms}
+              notion_size: ${scratch.num_src}
               training: true
               syntra_dataset:
                 _target_: training.dataset.syntra_raw_dataset.PNGRawDataset
@@ -129,6 +127,7 @@ trainer:
             datasets:
             - _target_: training.dataset.syntra_dataset.SynTraDataset
               transforms: ${syntra.train_transforms}
+              notion_size: ${scratch.num_src}
               training: true
               syntra_dataset:
                 _target_: training.dataset.syntra_raw_dataset.PNGRawDataset

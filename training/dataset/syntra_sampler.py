@@ -32,47 +32,32 @@ class SynTraSampler:
 class RandomUniformSampler(SynTraSampler):
     def __init__(
         self,
-        num_src,
-        max_num_cls,
+        num_src: int,
+        max_num_cls: int,
+        sort_sources: bool = True,
     ):
+        super().__init__(sort_sources)
         self.num_src = num_src
         self.max_num_cls = max_num_cls
 
     def sample(self, target, segment_loader, epoch=None):
 
-        for retry in range(MAX_RETRIES):
-            if len(target.frames) - 1 < self.num_src:
-                raise Exception(
-                    f"Cannot sample {self.num_src} sources for target {target.target.frame_id} " +
-                    f"as it only has {len(target)} selected neighborhood sources."
-                )
-            # sample source frames
-            if self.sort_sources:
-                # ordered by frame id
-                sources = sorted(target.frames[1:], key=lambda x: x.frame_id)
-            else:
-                # use the original order
-                sources = target.frames[1:]
-            sampled_sources = random.sample(sources, self.num_src)
-            frames = [target.frames[0]] + sampled_sources
-            # Get first frame class ids
-            visible_cls_ids = []
-            segments, cls_id_to_color = segment_loader.load(target.frames[0].frame_id)
-            for cls_id, segment in segments.items():
-                if segment.sum():
-                    visible_cls_ids.append(cls_id)
+        if len(target.frames) - 1 < self.num_src:
+            raise Exception(
+                f"Cannot sample {self.num_src} sources for target {target.target.frame_id} " +
+                f"as it only has {len(target)} selected neighborhood sources."
+            )
+        # sample source frames
+        if self.sort_sources:
+            # ordered by frame id
+            sources = sorted(target.frames[1:], key=lambda x: x.frame_id)
+        else:
+            # use the original order
+            sources = target.frames[1:]
+        sampled_sources = random.sample(sources, self.num_src)
+        frames = [target.frames[0]] + sampled_sources
 
-            # First frame needs to have at least a target to track
-            if len(visible_cls_ids) > 0:
-                break
-            if retry >= MAX_RETRIES - 1:
-                raise Exception("No visible objects")
-
-        cls_ids = random.sample(
-            visible_cls_ids,
-            min(len(visible_cls_ids), self.max_num_cls),
-        )
-        return SampledFramesAndClasses(frames=frames, class_ids=cls_ids, cls_id_to_color=cls_id_to_color)
+        return frames
 
 
 class EvalSampler(SynTraSampler):

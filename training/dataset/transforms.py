@@ -27,9 +27,9 @@ from training.utils.data_utils import SrcTgtDatapoint
 def hflip(datapoint, index):
 
     datapoint.frames[index].data = F.hflip(datapoint.frames[index].data)
-    for obj in datapoint.frames[index].objects:
-        if obj.segment is not None:
-            obj.segment = F.hflip(obj.segment)
+    for notion in datapoint.frames[index].notions:
+        if notion.segment is not None:
+            notion.segment = F.hflip(notion.segment)
 
     return datapoint
 
@@ -92,9 +92,9 @@ def resize(datapoint, index, size, max_size=None, square=False, v2=False):
         else datapoint.frames[index].data.size
     )
 
-    for obj in datapoint.frames[index].objects:
-        if obj.segment is not None:
-            obj.segment = F.resize(obj.segment[None, None], size).squeeze()
+    for notion in datapoint.frames[index].notions:
+        if notion.segment is not None:
+            notion.segment = F.resize(notion.segment[None, None], size).squeeze()
 
     h, w = size
     datapoint.frames[index].size = (h, w)
@@ -122,18 +122,18 @@ def pad(datapoint, index, padding, v2=False):
 
     datapoint.frames[index].size = (h, w)
 
-    for obj in datapoint.frames[index].objects:
-        if obj.segment is not None:
+    for notion in datapoint.frames[index].notions:
+        if notion.segment is not None:
             if v2:
                 if len(padding) == 2:
-                    obj.segment = Fv2.pad(obj.segment, (0, 0, padding[0], padding[1]))
+                    notion.segment = Fv2.pad(notion.segment, (0, 0, padding[0], padding[1]))
                 else:
-                    obj.segment = Fv2.pad(obj.segment, tuple(padding))
+                    notion.segment = Fv2.pad(notion.segment, tuple(padding))
             else:
                 if len(padding) == 2:
-                    obj.segment = F.pad(obj.segment, (0, 0, padding[0], padding[1]))
+                    notion.segment = F.pad(notion.segment, (0, 0, padding[0], padding[1]))
                 else:
-                    obj.segment = F.pad(obj.segment, tuple(padding))
+                    notion.segment = F.pad(notion.segment, tuple(padding))
     return datapoint
 
 
@@ -367,8 +367,8 @@ class RandomAffine:
 
         for img_idx, img in enumerate(datapoint.frames):
             this_masks = [
-                obj.segment.unsqueeze(0) if obj.segment is not None else None
-                for obj in img.objects
+                notion.segment.unsqueeze(0) if notion.segment is not None else None
+                for notion in img.notions
             ]
             if not self.consistent_transform:
                 # if not consistent we create a new affine params for every frame&mask pair Create a random affine transformation
@@ -381,7 +381,7 @@ class RandomAffine:
                 )
 
             transformed_bboxes, transformed_masks = [], []
-            for i in range(len(img.objects)):
+            for i in range(len(img.notions)):
                 if this_masks[i] is None:
                     transformed_masks.append(None)
                     # Dummy bbox for a dummy target
@@ -394,13 +394,13 @@ class RandomAffine:
                         fill=0.0,
                     )
                     if img_idx == 0 and transformed_mask.max() == 0:
-                        # We are dealing with a video and the object is not visible in the first frame
+                        # We are dealing with a SynTra datapoint and the notion is not visible in the first frame
                         # Return the datapoint without transformation
                         return None
                     transformed_masks.append(transformed_mask.squeeze())
 
-            for i in range(len(img.objects)):
-                img.objects[i].segment = transformed_masks[i]
+            for i in range(len(img.notions)):
+                img.notions[i].segment = transformed_masks[i]
 
             img.data = F.affine(
                 img.data,
@@ -465,11 +465,11 @@ def random_mosaic_frame(
     datapoint.frames[index].data = image_data_output
 
     # Step 2: downsize the masks and paste them into the target grid of the mosaic
-    for obj in datapoint.frames[index].objects:
-        if obj.segment is None:
+    for notion in datapoint.frames[index].notions:
+        if notion.segment is None:
             continue
-        assert obj.segment.shape == (H_im, W_im) and obj.segment.dtype == torch.uint8
-        segment_output = torch.zeros_like(obj.segment)
+        assert notion.segment.shape == (H_im, W_im) and notion.segment.dtype == torch.uint8
+        segment_output = torch.zeros_like(notion.segment)
 
         target_y_offset_b = target_grid_y * H_im // grid_h
         target_x_offset_b = target_grid_x * W_im // grid_w
@@ -479,7 +479,7 @@ def random_mosaic_frame(
         target_W_im_downsize = target_x_offset_e - target_x_offset_b
 
         segment_downsize = F.resize(
-            obj.segment[None, None],
+            notion.segment[None, None],
             size=(target_H_im_downsize, target_W_im_downsize),
             interpolation=InterpolationMode.BILINEAR,
             antialias=True,  # antialiasing for downsizing
@@ -490,12 +490,12 @@ def random_mosaic_frame(
         segment_output[
             target_y_offset_b:target_y_offset_e, target_x_offset_b:target_x_offset_e
         ] = segment_downsize
-        obj.segment = segment_output
+        notion.segment = segment_output
 
     return datapoint
 
 
-class RandomMosaicVideoAPI:
+class RandomMosaicSynTraAPI:
     def __init__(self, prob=0.15, grid_h=2, grid_w=2, use_random_hflip=False):
         self.prob = prob
         self.grid_h = grid_h

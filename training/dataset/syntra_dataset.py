@@ -33,20 +33,20 @@ class SynTraDataset(VisionDataset):
         syntra_dataset: SynTraRawDataset,
         sampler: SynTraSampler,
         multiplier: int,
-        always_target=True,
+        notion_size: int = 3,
         target_segments_available=True,
     ):
         self._transforms = transforms
         self.training = training
         self.sampler = sampler
         self.syntra_dataset = syntra_dataset
+        self.notion_size = notion_size
 
         self.repeat_factors = torch.ones(len(self.syntra_dataset), dtype=torch.float32)
         self.repeat_factors *= multiplier
         print(f"Raw dataset length = {len(self.syntra_dataset)}")
 
         self.curr_epoch = 0  # Used in case data loader behavior changes across epochs
-        self.always_target = always_target
         self.target_segments_available = target_segments_available
             
 
@@ -58,8 +58,8 @@ class SynTraDataset(VisionDataset):
                     idx = idx.item()
                 # sample a target image
                 target, segment_loader = self.syntra_dataset.get_target(idx)
-                # sample frames and object indices to be used in a datapoint
-                sampled_frames_and_classes = self.sampler.sample(
+                # sample frames (src+tgt) to be used in a datapoint
+                sampled_frames = self.sampler.sample(
                     target, segment_loader, epoch=self.curr_epoch
                 )
                 break  # Succesfully loaded syntra datapoint
@@ -73,22 +73,21 @@ class SynTraDataset(VisionDataset):
                     # Shouldn't fail to load a val sample
                     raise e
 
-        datapoint = self.construct(target, sampled_frames_and_classes, segment_loader)
+        datapoint = self.construct(target, sampled_frames, segment_loader)
         for transform in self._transforms:
             datapoint = transform(datapoint, epoch=self.curr_epoch)
         return datapoint
 
-    def construct(self, target, sampled_frames_and_classes, segment_loader):
+    def construct(self, target, sampled_frames, segment_loader):
         """
         Constructs a SrcTgtDatapoint sample to pass to transforms
         """
-        sampled_frames = sampled_frames_and_classes.franmes
-        sampled_classes = sampled_frames_and_classes.class_ids
-        sampled_cls_id_to_color = sampled_frames_and_classes.cls_id_to_color
-        sampled_colors = [x for x in sampled_cls_id_to_color.values()]
 
         images = []
         rgb_images = load_images(sampled_frames)
+        sampled_colors = []
+        sampled_notion_ids = []
+
         # Iterate over the sampled frames and store their rgb data and segment data 
         for frame_idx, frame in enumerate(sampled_frames):
             w, h = rgb_images[frame_idx].size
@@ -98,33 +97,41 @@ class SynTraDataset(VisionDataset):
                     notions=[],
                 )
             )
-            # We load the gt segments associated with the current frame
+            # We load the gt segments (notions) associated with the current frame
             segments, cls_id_to_colors = segment_loader.load(frame.frame_id)
-            cur_colors = [x for x in cls_id_to_colors.values()]
-            for cls_id, cls_color in sampled_cls_id_to_color.items():
+            
+            for cls_id, cls_color in cls_id_to_colors.items():
+                # update visible colors
+                if cls_color not in sampled_colors:
+                    sampled_colors.append(cls_color)
                 # Extract the segment
-                if cls_color in cur_colors:
-                    assert (
-                        segments[cls_id] is not None
-                    ), "None targets are not supported"
-                    # segment is uint8 and remains uint8 throughout the transforms
-                    segment = segments[cls_id].to(torch.uint8)
-                else:
-                    # There is no target, we either use a zero mask target or drop this object
-                    if not self.always_target:
-                        continue
-                    segment = torch.zeros(h, w, dtype=torch.uint8)
+                segment = segments[cls_id].to(torch.uint8)
+                # segment = torch.zeros(h, w, dtype=torch.uint8)
 
+                mapped_cls_id = sampled_colors.index(cls_color)
                 images[frame_idx].notions.append(
                     Notion(
-                        cls_id=cls_id,
+                        cls_id=mapped_cls_id,
                         frame_id=frame.frame_id,
                         segment=segment,
                     )
                 )
+            
+                sampled_notion_ids.append(mapped_cls_id)
+        
+        sampled_notion_ids = list(set(sampled_notion_ids))
+        if len(sampled_notion_ids) > self.notion_size:
+            # Randomly sample a subset of notion ids to fit into notion_size
+            sampled_notion_ids = random.sample(sampled_notion_ids, self.notion_size)
+            # Filter out notions in each frame that are not in the sampled_notion_ids
+            for frame in images:
+                frame.notions = [n for n in frame.notions if n.cls_id in sampled_notion_ids]
+
         return SrcTgtDatapoint(
             frames=images,
-            target_id=0,
+            target_id=target.target_id,
+            valid_src_notion_ids=sorted(sampled_notion_ids),
+            notion_size=self.notion_size,
             size=(h, w),
         )
 

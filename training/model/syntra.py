@@ -78,8 +78,18 @@ class SynTraTrain(SynTraBase):
         return image, vision_feats, vision_pos_embeds, feat_sizes
 
     def prepare_prompt_inputs(self, backbone_out, input, start_frame_idx=0):
+        B, T, _, H, W = input.img_batch.shape
+        h, w = backbone_out['vision_features'].shape[-2:]
+        img_features = backbone_out['vision_features'].reshape(B, T, -1, h, w)
+        src_pos_embeds = backbone_out['vision_pos_enc'][-1].reshape(B, T, -1, h, w)
+        src_img_features = img_features[:, 1:]
+        src_pos_embeds = src_pos_embeds[:, 1:]
 
-        return None
+        notions = self.prompt_encoder(
+            src_img_features, src_pos_embeds, input.src_mask_batch.float()
+        )
+
+        return notions
 
     def forward_segmentaion(
         self, backbone_out, input: BatchedSrcTgtDatapoint, return_dict=False

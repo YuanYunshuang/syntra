@@ -22,27 +22,86 @@ class NotionAttentionLayer(nn.Module):
         cross_attention: nn.Module,
         d_model: int,
         dim_feedforward: int,
-        dropout: float,
-        pos_enc_at_attn: bool,
-        pos_enc_at_cross_attn_keys: bool,
-        pos_enc_at_cross_attn_queries: bool,
+        dropout: float = 0.1,
+        pos_enc_at_cross_attn_keys: bool = True,
+        pos_enc_at_cross_attn_queries: bool = False,
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.dim_feedforward = dim_feedforward
+        self.dropout_value = dropout
+        self.cross_attn = cross_attention
+
+        # Implementation of Feedforward model
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.dropout3 = nn.Dropout(dropout)
+
+        self.activation_str = activation
+        self.activation = get_activation_fn(activation)
+
+        # Where to add pos enc
+        self.pos_enc_at_cross_attn_queries = pos_enc_at_cross_attn_queries
+        self.pos_enc_at_cross_attn_keys = pos_enc_at_cross_attn_keys
+
+    def forward(
+        self,
+        prompt,
+        notions,
+        prompt_pos: Optional[Tensor] = None,
+        notion_pos: Optional[Tensor] = None,
+        num_k_exclude_rope: int = 0,
+    ) -> torch.Tensor:
+
+        kwds = {}
+        if num_k_exclude_rope > 0:
+            assert isinstance(self.cross_attn, RoPEAttention)
+            kwds = {"num_k_exclude_rope": num_k_exclude_rope}
+
+        # Cross-Attention
+        tgt = self.norm1(notions)
+        tgt = self.cross_attn(
+            q=tgt + notion_pos if self.pos_enc_at_cross_attn_queries else tgt,
+            k=prompt + prompt_pos if self.pos_enc_at_cross_attn_keys else prompt,
+            v=prompt,
+            **kwds,
+        )
+        notions = notions + self.dropout1(tgt)
+
+        # MLP
+        tgt = self.norm2(notions)
+        tgt = self.linear2(self.dropout2(self.activation(self.linear1(tgt))))
+        notions = notions + self.dropout3(tgt)
+        return notions
+
+
+class PromptAttentionLayer(nn.Module):
+
+    def __init__(
+        self,
+        activation: str,
+        d_model: int,
+        dim_feedforward: int,
         self_attention: nn.Module,
+        dropout: float = 0.1,
+        pos_enc_at_attn: bool = True,
     ):
         super().__init__()
         self.d_model = d_model
         self.dim_feedforward = dim_feedforward
         self.dropout_value = dropout
         self.self_attn = self_attention
-        self.cross_attn_image = cross_attention
 
-        # Implementation of Feedforward model
         self.linear1 = nn.Linear(d_model, dim_feedforward)
-        self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
 
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
-        self.norm3 = nn.LayerNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
         self.dropout3 = nn.Dropout(dropout)
@@ -52,116 +111,99 @@ class NotionAttentionLayer(nn.Module):
 
         # Where to add pos enc
         self.pos_enc_at_attn = pos_enc_at_attn
-        self.pos_enc_at_cross_attn_queries = pos_enc_at_cross_attn_queries
-        self.pos_enc_at_cross_attn_keys = pos_enc_at_cross_attn_keys
-
-    def _forward_sa(self, tgt, query_pos):
-        # Self-Attention
-        tgt2 = self.norm1(tgt)
-        q = k = tgt2 + query_pos if self.pos_enc_at_attn else tgt2
-        tgt2 = self.self_attn(q, k, v=tgt2)
-        tgt = tgt + self.dropout1(tgt2)
-        return tgt
-
-    def _forward_ca(self, tgt, notions, query_pos, pos, num_k_exclude_rope=0):
-        kwds = {}
-        if num_k_exclude_rope > 0:
-            assert isinstance(self.cross_attn_image, RoPEAttention)
-            kwds = {"num_k_exclude_rope": num_k_exclude_rope}
-
-        # Cross-Attention
-        tgt2 = self.norm2(tgt)
-        tgt2 = self.cross_attn_image(
-            q=tgt2 + query_pos if self.pos_enc_at_cross_attn_queries else tgt2,
-            k=notions + pos if self.pos_enc_at_cross_attn_keys else notions,
-            v=notions,
-            **kwds,
-        )
-        tgt = tgt + self.dropout2(tgt2)
-        return tgt
 
     def forward(
         self,
-        tgt,
-        notions,
-        pos: Optional[Tensor] = None,
-        query_pos: Optional[Tensor] = None,
-        num_k_exclude_rope: int = 0,
+        prompt,
+        prompt_pos: Optional[Tensor] = None,
     ) -> torch.Tensor:
 
-        # Self-Attn, Cross-Attn
-        tgt = self._forward_sa(tgt, query_pos)
-        tgt = self._forward_ca(tgt, notions, query_pos, pos, num_k_exclude_rope)
+        # Self-Attn
+        tgt = self.norm1(prompt)
+        q = k = tgt + prompt_pos if self.pos_enc_at_attn else tgt
+        tgt = self.self_attn(q, k, v=tgt)
+        prompt = prompt + self.dropout1(tgt)
+
         # MLP
-        tgt2 = self.norm3(tgt)
-        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt2))))
-        tgt = tgt + self.dropout3(tgt2)
-        return tgt
+        tgt = self.norm2(prompt)
+        tgt = self.linear2(self.dropout2(self.activation(self.linear1(tgt))))
+        prompt = prompt + self.dropout3(tgt)
+        return prompt
 
 
 class NotionAttention(nn.Module):
     def __init__(
         self,
         d_model: int,
-        pos_enc_at_input: bool,
-        layer: nn.Module,
-        num_layers: int,
+        cross_attention: nn.Module,
+        self_attention: nn.Module,
+        dim_feedforward: int,
+        num_sa_layers: int,
+        num_ca_layers: int,
+        activation: str,
+        pos_enc_at_attn: bool = True,  # Add pos enc at self-attn?
+        pos_enc_at_cross_attn_keys: bool = True,  # Add pos enc at cross-attn keys?
+        pos_enc_at_cross_attn_queries: bool = False,  # Add pos enc at cross-attn queries?
         batch_first: bool = True,  # Do layers expect batch first input?
     ):
         super().__init__()
         self.d_model = d_model
-        self.layers = get_clones(layer, num_layers)
-        self.num_layers = num_layers
+        self.sa_layers = get_clones(PromptAttentionLayer(
+            activation=activation,
+            d_model=d_model,
+            dim_feedforward=dim_feedforward,
+            self_attention=self_attention,
+            pos_enc_at_attn=pos_enc_at_attn,
+        ), num_sa_layers)
+        self.ca_layers = get_clones(NotionAttentionLayer(
+            activation=activation,
+            cross_attention=cross_attention,
+            d_model=d_model,
+            dim_feedforward=dim_feedforward,
+            pos_enc_at_cross_attn_keys=pos_enc_at_cross_attn_keys,
+            pos_enc_at_cross_attn_queries=pos_enc_at_cross_attn_queries,
+        ), num_ca_layers)
+        
+        self.num_ca_layers = num_ca_layers
+        self.num_ca_layers = num_ca_layers
         self.norm = nn.LayerNorm(d_model)
-        self.pos_enc_at_input = pos_enc_at_input
         self.batch_first = batch_first
 
     def forward(
         self,
-        curr: torch.Tensor,  # self-attention inputs
-        memory: torch.Tensor,  # cross-attention inputs
-        curr_pos: Optional[Tensor] = None,  # pos_enc for self-attention inputs
-        memory_pos: Optional[Tensor] = None,  # pos_enc for cross-attention inputs
-        num_obj_ptr_tokens: int = 0,  # number of object pointer *tokens*
+        prompt_emb: torch.Tensor,  # self-attention inputs
+        notion_emb: torch.Tensor,  # cross-attention inputs
+        prompt_pos: Optional[Tensor] = None,  # pos_enc for self-attention inputs
+        notion_pos: Optional[Tensor] = None,  # pos_enc for cross-attention inputs
     ):
-        if isinstance(curr, list):
-            assert isinstance(curr_pos, list)
-            assert len(curr) == len(curr_pos) == 1
-            curr, curr_pos = (
-                curr[0],
-                curr_pos[0],
-            )
+        if not self.batch_first:
+            # Convert to seq first
+            prompt_emb = prompt_emb.transpose(0, 1)
+            notion_emb = notion_emb.transpose(0, 1)
+            if prompt_pos is not None:
+                prompt_pos = prompt_pos.transpose(0, 1)
+            if notion_pos is not None:
+                notion_pos = notion_pos.transpose(0, 1)
 
-        assert (
-            curr.shape[1] == memory.shape[1]
-        ), "Batch size must be the same for curr and memory"
-
-        output = curr
-        if self.pos_enc_at_input and curr_pos is not None:
-            output = output + 0.1 * curr_pos
-
-        if self.batch_first:
-            # Convert to batch first
-            output = output.transpose(0, 1)
-            curr_pos = curr_pos.transpose(0, 1)
-            memory = memory.transpose(0, 1)
-            memory_pos = memory_pos.transpose(0, 1)
-
-        for layer in self.layers:
+        # Self-Attention layers on prompt embeddings
+        for layer in self.sa_layers:
+            prompt_emb = layer(prompt=prompt_emb, prompt_pos=prompt_pos)
+        # Cross-Attention layers on notion embeddings
+        for layer in self.ca_layers:
             kwds = {}
-            if isinstance(layer.cross_attn_image, RoPEAttention):
-                kwds = {"num_k_exclude_rope": num_obj_ptr_tokens}
+            if isinstance(layer.cross_attn, RoPEAttention):
+                kwds = {"num_k_exclude_rope": 0}
 
-            output = layer(
-                tgt=output,
-                memory=memory,
-                pos=memory_pos,
-                query_pos=curr_pos,
+            notion_emb = layer(
+                prompt=prompt_emb,
+                notions=notion_emb,
+                prompt_pos=prompt_pos,
+                notion_pos=notion_pos,
                 **kwds,
             )
-        normed_output = self.norm(output)
+        normed_output = self.norm(notion_emb)
 
-        if self.batch_first:
+        if not self.batch_first:
             # Convert back to seq first
             normed_output = normed_output.transpose(0, 1)
             curr_pos = curr_pos.transpose(0, 1)

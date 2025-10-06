@@ -27,6 +27,7 @@ from training.utils.checkpoint_utils import (
 
 from training.utils.logger import Logger, setup_logging
 from training.optimizer import construct_optimizer
+from training.utils.data_utils import BatchedSrcTgtDatapoint
 
 from training.utils.train_utils import (
     AverageMeter,
@@ -400,6 +401,119 @@ class SingleGPUTrainer:
         success = g_pathmgr.mv(checkpoint_path_tmp, checkpoint_path)
         assert success
 
+    def _get_meters(self, phase_filters=None):
+        if self.meters is None:
+            return {}
+        meters = {}
+        for phase, phase_meters in self.meters.items():
+            if phase_filters is not None and phase not in phase_filters:
+                continue
+            for key, key_meters in phase_meters.items():
+                if key_meters is None:
+                    continue
+                for name, meter in key_meters.items():
+                    meters[f"{phase}_{key}/{name}"] = meter
+        return meters
+
+    def _reset_meters(self, phases: str) -> None:
+        for meter in self._get_meters(phases).values():
+            meter.reset()
+
+    def _step(
+        self,
+        batch: BatchedSrcTgtDatapoint,
+        model: nn.Module,
+        phase: str,
+    ):
+
+        outputs = model(batch)
+        targets = batch.src_mask_batch
+        batch_size = len(batch.img_batch)
+
+        key = batch.dict_key  # key for dataset
+        loss = self.loss[key](outputs, targets)
+        loss_str = f"Losses/{phase}_{key}_loss"
+
+        loss_log_str = os.path.join("Step_Losses", loss_str)
+
+        # loss contains multiple sub-components we wish to log
+        step_losses = {}
+        if isinstance(loss, dict):
+            step_losses.update(
+                {f"Losses/{phase}_{key}_{k}": v for k, v in loss.items()}
+            )
+            loss = self._log_loss_detailed_and_return_core_loss(
+                loss, loss_log_str, self.steps[phase]
+            )
+
+        if self.steps[phase] % self.logging_conf.log_scalar_frequency == 0:
+            self.logger.log(
+                loss_log_str,
+                loss,
+                self.steps[phase],
+            )
+
+        self.steps[phase] += 1
+
+        ret_tuple = {loss_str: loss}, batch_size, step_losses
+
+        if phase in self.meters and key in self.meters[phase]:
+            meters_dict = self.meters[phase][key]
+            if meters_dict is not None:
+                for _, meter in meters_dict.items():
+                    meter.update(
+                        find_stages=outputs,
+                        find_metadatas=batch.metadata,
+                    )
+
+        return ret_tuple
+        
+    def _run_step(
+        self,
+        batch: BatchedSrcTgtDatapoint,
+        phase: str,
+        loss_mts: Dict[str, AverageMeter],
+        extra_loss_mts: Dict[str, AverageMeter],
+        raise_on_error: bool = True,
+    ):
+        """
+        Run the forward / backward
+        """
+
+        # it's important to set grads to None, especially with Adam since 0
+        # grads will also update a model even if the step doesn't produce
+        # gradients
+        self.optim.zero_grad(set_to_none=True)
+        with torch.cuda.amp.autocast(
+            enabled=self.optim_conf.amp.enabled,
+            dtype=get_amp_type(self.optim_conf.amp.amp_dtype),
+        ):
+            loss_dict, batch_size, extra_losses = self._step(
+                batch,
+                self.model,
+                phase,
+            )
+
+        assert len(loss_dict) == 1
+        loss_key, loss = loss_dict.popitem()
+
+        if not math.isfinite(loss.item()):
+            error_msg = f"Loss is {loss.item()}, attempting to stop training"
+            logging.error(error_msg)
+            if raise_on_error:
+                raise FloatingPointError(error_msg)
+            else:
+                return
+
+        self.scaler.scale(loss).backward()
+        loss_mts[loss_key].update(loss.item(), batch_size)
+        for extra_loss_key, extra_loss in extra_losses.items():
+            if extra_loss_key not in extra_loss_mts:
+                extra_loss_mts[extra_loss_key] = AverageMeter(
+                    extra_loss_key, self.device, ":.2e"
+                )
+            extra_loss_mts[extra_loss_key].update(extra_loss.item(), batch_size)
+
     def train_epoch(self, train_loader):
 
         # Init stat meters
@@ -567,7 +681,7 @@ class SingleGPUTrainer:
 
             self.epoch += 1
         # epoch was incremented in the loop but the val step runs out of the loop
-        self.epoch -= 1
+        self.epoch -= 1 
 
     def run(self):
         assert self.mode in ["train", "train_only", "val"]

@@ -98,10 +98,11 @@ class PNGRawDataset(SynTraRawDataset):
         )
         ]
         for _, fid in enumerate(all_srcs):
+            cur_name = fid.rsplit(".", 1)[-1]
             frames.append(SynTraFrame(
                 fid, 
-                image_path=os.path.join(self.img_dir, f"{fid}.png"),
-                mask_path=os.path.join(self.lbl_dir, f"{fid}.png"),
+                image_path=os.path.join(self.img_dir, f"{cur_name}.png"),
+                mask_path=os.path.join(self.lbl_dir, f"{cur_name}.png"),
             ))
 
         target = SynTraMatches(target_id=0, frames=frames)

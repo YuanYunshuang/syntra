@@ -117,18 +117,21 @@ class SynTraSegmentLoader:
         """
         # check the path
         mask_path = os.path.join(
-            self.lbl_dir, f"{frame_id}.png"
+            self.lbl_dir, f"{frame_id.rsplit('.', 1)[1]}.png"
         )
+        assert os.path.exists(mask_path), f"Mask path {mask_path} doesn't exist!"
 
         # load the mask
-        masks = PILImage.open(mask_path).convert("P")
+        masks = PILImage.open(mask_path).convert("P", dither=PILImage.NONE) # use dither to make sure the colors are uniquelly mapped to ids
         palette = masks.getpalette()
         masks = np.array(masks)
 
         cls_ids = pd.unique(masks.flatten())
         cls_ids = cls_ids[cls_ids != 0]  # remove background (0)
 
-        # get mapping from cls id to original colors
+        # palette of PIL does not always map the same color to the same id,
+        # so we need to get mapping from cls id to original colors to track 
+        # the corresponding classes in different frames (source images and target image)
         colors = [tuple(palette[i:i+3]) for i in range(0, len(palette), 3)]
         cls_id_to_color = {cls_id: colors[cls_id] for cls_id in cls_ids}
 
