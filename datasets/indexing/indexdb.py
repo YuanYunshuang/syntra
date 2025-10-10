@@ -92,10 +92,12 @@ class DinoV2Encoder:
     
 
 class IndexDatabase:
-    def __init__(self, db_path=None, map_dataloader=None, img_encoder=None, index_dim=384, cache_original_vec=True):
+    def __init__(self, db_path=None, map_dataloader=None, img_encoder=None, 
+                 index_dim=384, cache_original_vec=True, merge_patch_token=True):
         self.db_path = db_path
         self.index_dim = index_dim
         self.cache_original_vec = cache_original_vec
+        self.merge_patch_token = merge_patch_token
         self.img_encoder = DinoV2Encoder() if img_encoder is None else img_encoder
         self.img_index = {}
         self.encoded_vectors = {}
@@ -127,12 +129,15 @@ class IndexDatabase:
             for paths, imgs in pbar:
                 imgs = imgs.cuda()
                 emb_dict = self.img_encoder.generate_embedding(imgs)
-                cls_token = emb_dict['x_norm_clstoken']  # (B, C)
-                # patch_token = emb_dict['x_norm_patchtokens']  # (B, 256, C)
+                token = emb_dict['x_norm_clstoken']  # (B, C)
+                if self.merge_patch_token:
+                    patch_token = emb_dict['x_norm_patchtokens']  # (B, 256, C)
+                    # merge cls and patch tokens
+                    token = token + patch_token.mean(dim=1)  # (B, C)
                 cur_paths.extend(paths)
-                faiss_index.add(cls_token)
+                faiss_index.add(token)
                 if self.cache_original_vec:
-                    cur_img_vectors.append(cls_token)
+                    cur_img_vectors.append(token)
             print(f"Processed {len(cur_paths)} images in dataset {dataset}")
             self.img_index[dataset] = faiss_index
             if self.cache_original_vec:

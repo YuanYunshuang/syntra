@@ -24,8 +24,9 @@ class SynTraBase(torch.nn.Module):
         self,
         image_encoder,
         notion_attention,
-        num_notions=3,  # default 1 input frame + 6 previous frames
-        image_size=448,
+        num_notions=4,  # default 1 input frame + 6 previous frames
+        num_tokens_per_notion=4,  # default 4 tokens to represent each notion
+        image_size=384,
         backbone_stride=16,  # stride of the image backbone output
         sigmoid_scale_for_notion_enc=1.0,  # scale factor for mask sigmoid prob
         sigmoid_bias_for_notion_enc=0.0,  # bias factor for mask sigmoid prob
@@ -33,6 +34,10 @@ class SynTraBase(torch.nn.Module):
         use_high_res_features=False,
         # whether to use sigmoid to restrict ious prediction to [0-1]
         iou_prediction_use_sigmoid=False,
+        # Whether to predict if there is an object in the frame
+        pred_obj_scores: bool = False,
+        # Whether to use an MLP to predict object scores
+        pred_obj_scores_mlp: bool = False,
     ):
         super().__init__()
 
@@ -47,6 +52,7 @@ class SynTraBase(torch.nn.Module):
         self.notion_attention = notion_attention
         self.hidden_dim = image_encoder.neck.d_model
         self.num_notions = num_notions  # Number of notions
+        self.num_tokens_per_notion = num_tokens_per_notion
        
         # Apply sigmoid to the output raw mask logits (to turn them from
         # range (-inf, +inf) to range (0, 1)) before feeding them into the memory encoder
@@ -55,9 +61,11 @@ class SynTraBase(torch.nn.Module):
 
         self.iou_prediction_use_sigmoid = iou_prediction_use_sigmoid
 
-        # Part 3: prompt encoder and SAM-style mask decoder for the final mask output
+        # Part 3: SAM-style mask decoder for the final mask output
         self.image_size = image_size
         self.backbone_stride = backbone_stride
+        self.pred_obj_scores = pred_obj_scores
+        self.pred_obj_scores_mlp = pred_obj_scores_mlp
 
         self._build_heads()
 
@@ -70,6 +78,7 @@ class SynTraBase(torch.nn.Module):
             "Please use the corresponding methods in SAM2VideoPredictor for inference or SAM2Train for training/fine-tuning"
             "See notebooks/video_predictor_example.ipynb for an inference example."
         )
+    
 
     def _build_heads(self):
         """Build prompt encoder and mask decoder."""
@@ -80,23 +89,25 @@ class SynTraBase(torch.nn.Module):
             embed_dim=self.prompt_embed_dim,
             image_embedding_size=(self.image_embedding_size, self.image_embedding_size),
             input_image_size=(self.image_size, self.image_size),
-            mask_in_chans=1,
             notion_attention=self.notion_attention,
             num_notion_embeddings=self.num_notions,
+            num_tokens_per_notion=self.num_tokens_per_notion
         )
 
         self.mask_decoder = MaskDecoder(
                 transformer=TwoWayTransformer(
                 depth=2,
-                embedding_dim=self.prompt_embed_dim,
+                embedding_dim=self.hidden_dim,
                 mlp_dim=2048,
                 num_heads=8,
             ),
-            transformer_dim=self.prompt_embed_dim,
+            transformer_dim=self.hidden_dim,
             iou_head_depth=3,
             iou_head_hidden_dim=256,
             use_high_res_features=self.use_high_res_features,
             iou_prediction_use_sigmoid=self.iou_prediction_use_sigmoid,
+            pred_obj_scores=self.pred_obj_scores,
+            pred_obj_scores_mlp=self.pred_obj_scores_mlp,
         )
 
     def forward(self, *args, **kwargs):
@@ -104,12 +115,45 @@ class SynTraBase(torch.nn.Module):
             "Please define the forward method in the subclass."
         )
 
-    def _forward_heads(
-        self,
-        backbone_features,
-        high_res_features=None,
-    ):
-        return None
+    def _forward_heads(self, tgt_features, tgt_pos_embeds, 
+                       src_features, src_pos_embeds, src_mask, 
+                       high_res_features=None):
+        # embed prompt image-label paris
+        notions, dense_prompt_embeddings = self.prompt_encoder(
+            src_features, src_pos_embeds, src_mask
+        ) # B x N_notion x N_token x C
+        tgt_pos = self.prompt_encoder.get_dense_pe()
+        # Cross attention between tgt features and notion embeddings
+        low_res_masks, iou_pred, mask_tokens_out, object_score_logits = self.mask_decoder(
+            tgt_features, tgt_pos, notions, dense_prompt_embeddings, high_res_features
+        )
+        if self.pred_obj_scores:
+            is_obj_appearing = object_score_logits > 0 # BxN
+
+            # Mask used for spatial memories is always a *hard* choice between obj and no obj,
+            # consistent with the actual mask prediction
+            low_res_masks = torch.where(
+                is_obj_appearing[..., None, None],
+                low_res_masks,
+                NO_OBJ_SCORE,
+            ) # BxNxHxW
+        
+        # convert masks from possibly bfloat16 (or float16) to float32
+        # (older PyTorch versions before 2.1 don't support `interpolate` on bf16)
+        low_res_masks = low_res_masks.float()
+        high_res_masks = F.interpolate(
+            low_res_masks,
+            size=(self.image_size, self.image_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        return {
+            "pred_masks": low_res_masks,
+            "pred_masks_high_res": high_res_masks,
+            "pred_ious": iou_pred,
+            "object_score_logits": object_score_logits,
+        }
 
     def _use_mask_as_output(self, backbone_features, high_res_features, mask_inputs):
         """
@@ -165,15 +209,23 @@ class SynTraBase(torch.nn.Module):
 
     def forward_image(self, img_batch: torch.Tensor):
         """Get the image feature on the input batch."""
-        backbone_out = self.image_encoder(img_batch)
+        B, T = img_batch.shape[:2]
+        backbone_out = self.image_encoder(img_batch.flatten(0, 1))
+        # convert NxCxHxW to BxTxCxHxW
+        for k, v in backbone_out.items():
+            if k in ["backbone_fpn", "vision_pos_enc"]:
+                backbone_out[k] = [x.view(B, T, *x.shape[1:]) for x in v]
+            else:
+                backbone_out[k] = v.view(B, T, *v.shape[1:])
         if self.use_high_res_features:
             # precompute projected level 0 and level 1 features in Mask decoder
             # to avoid running it again on every click
+            # only target features are needed in mask decoder
             backbone_out["backbone_fpn"][0] = self.mask_decoder.conv_s0(
-                backbone_out["backbone_fpn"][0]
+                backbone_out["backbone_fpn"][0][:, 0]
             )
             backbone_out["backbone_fpn"][1] = self.mask_decoder.conv_s1(
-                backbone_out["backbone_fpn"][1]
+                backbone_out["backbone_fpn"][1][:, 0]
             )
         return backbone_out
 

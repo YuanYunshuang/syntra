@@ -6,6 +6,10 @@
 import os
 import json
 
+import matplotlib.pyplot as plt
+from PIL import Image
+import numpy as np
+
 from indexdb import IndexDatabase, DinoV2Encoder, BaseDataloaders
 
 
@@ -44,7 +48,7 @@ def generate_src_tgt_intra_cls(data_root, nshot, k=8):
             json.dump(pairing_info, f, indent=4)
 
 
-def generate_src_tgt_inter_cls(data_root, nshot, k=8):
+def generate_src_tgt_inter_cls(data_root, nshot, k=8, visualize=False):
     img_encoder = DinoV2Encoder()
     for dataset in os.listdir(data_root):
         with open(os.path.join(data_root, dataset, f'selected_{nshot}.json'), 'r') as f:
@@ -56,8 +60,9 @@ def generate_src_tgt_inter_cls(data_root, nshot, k=8):
         all_samples = []
         for cls_samples in data_info.values():
             all_samples += cls_samples
-        map_dataloader = BaseDataloaders(data_root, all_samples, batch_size=4)
-        index_db = IndexDatabase(map_dataloader=map_dataloader, img_encoder=img_encoder)
+        all_samples_no_repeat = list(set(all_samples))
+        map_dataloader = BaseDataloaders(data_root, all_samples_no_repeat, batch_size=4)
+        index_db = IndexDatabase(map_dataloader=map_dataloader, img_encoder=img_encoder, merge_patch_token=False)
 
         for sample in all_samples:
             sample_name = sample.rsplit('.', 1)[1] 
@@ -67,9 +72,11 @@ def generate_src_tgt_inter_cls(data_root, nshot, k=8):
             mask = distances>1e-3
             distances = distances[mask]
             indices = indices[mask]
+            if len(indices) < k - 1:
+                print(f"Warning: sample {sample} has less than {k} neighbors. Final selected neighbors: {len(indices)}")
             # update pairing info
             pairing_info[sample] = {
-                'src_samples': [all_samples[i] for i in indices],
+                'src_samples': [all_samples_no_repeat[i] for i in indices],
                 'distances': distances.tolist()
             }
         del index_db
@@ -79,27 +86,24 @@ def generate_src_tgt_inter_cls(data_root, nshot, k=8):
         save_path = os.path.join(data_root, dataset, f'paring_{nshot}_intercls.json')
         with open(save_path, 'w') as f:
             json.dump(pairing_info, f, indent=4)
-
-
-
-def visualize_generateion(data_root, generated_pair_info):
-    import matplotlib.pyplot as plt
-    from PIL import Image
-    import numpy as np
-    for dataset in os.listdir(data_root):
-        with open(os.path.join(data_root, dataset, generated_pair_info), 'r') as f:
-            pairing_info = json.load(f)
         
+        if visualize:
+            visualize_generateion(dataset, pairing_info, mode='inter', n_vis = 5)
+
+
+
+def visualize_generateion(dataset, pairing_info, mode='inter', n_vis = 5):
+
         img_dir = os.path.join(data_root, dataset, 'imgs')
         # select a few samples to visualize 
-        if 'intra' in generated_pair_info:
+        if mode == 'intra':
             vis_keys = []
             # select 5 samples per class
             for cls in range(1, 6):
                 cls_keys = [k for k in pairing_info.keys() if k.split('.')[2]==str(cls)]
-                vis_keys += np.random.choice(cls_keys, size=5, replace=False).tolist()
+                vis_keys += np.random.choice(cls_keys, size=n_vis, replace=False).tolist()
         else:
-            vis_keys = np.random.choice(list(pairing_info.keys()), size=20, replace=False).tolist()
+            vis_keys = np.random.choice(list(pairing_info.keys()), size=n_vis, replace=False).tolist()
 
         for tgt in vis_keys:
             info = pairing_info[tgt]
@@ -108,12 +112,12 @@ def visualize_generateion(data_root, generated_pair_info):
             n_src = len(src_names)
             fig, ax = plt.subplots(1, n_src+1, figsize=(4*(n_src+1), 4))
             fig.suptitle(f"Target: {tgt}", fontsize=16)
-            tgt_img = Image.open(os.path.join(img_dir, f"{tgt_name}.png"))
+            tgt_img = Image.open(os.path.join(img_dir, f"{tgt_name}.png")).convert("RGB")
             ax[0].imshow(tgt_img)
             ax[0].set_title("Target")
             ax[0].axis('off')
             for i, src_name in enumerate(src_names):
-                src_img = Image.open(os.path.join(img_dir, f"{src_name}.png"))
+                src_img = Image.open(os.path.join(img_dir, f"{src_name}.png")).convert("RGB")
                 ax[i+1].imshow(src_img)
                 ax[i+1].set_title(f"Source {i+1}")
                 ax[i+1].axis('off')
@@ -121,7 +125,6 @@ def visualize_generateion(data_root, generated_pair_info):
 
 
 if __name__=="__main__":
-    data_root = "/home/yuan/data/HisMap/syntra"
-    nshot = 8
-    generate_src_tgt_inter_cls(data_root, nshot, k=8)
-    visualize_generateion(data_root, f'paring_{nshot}_intercls.json')
+    data_root = "/home/yuan/data/HisMap/syntra384"
+    nshot = 50
+    generate_src_tgt_inter_cls(data_root, nshot, k=8, visualize=True)

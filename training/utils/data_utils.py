@@ -11,6 +11,7 @@ Mostly copy-paste from torchvision references.
 """
 
 from dataclasses import dataclass
+import random
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -181,19 +182,21 @@ def collate_fn(
         img_batch += [torch.stack([frame.data for frame in tgt.frames], dim=0)]
         valid_notion_ids = tgt.valid_src_notion_ids
         h, w = tgt.size
+        # generate shuffle index for notions
+        notion_idxs = random.sample(range(tgt.notion_size), tgt.notion_size)
         # collect target masks
         tgt_masks = torch.zeros((tgt.notion_size, h, w), dtype=torch.bool)
         for n in tgt.frames[0].notions:
             if n.cls_id in valid_notion_ids:
-                tgt_masks[n.cls_id] = n.segment.to(torch.bool)
-        tgt_msk_batch.append(tgt_masks)
+                tgt_masks[valid_notion_ids.index(n.cls_id)] = n.segment.to(torch.bool)
+        tgt_msk_batch.append(tgt_masks[notion_idxs])  # shuffle the target masks
         # collect source masks
-        src_masks = torch.zeros(((len(tgt.frames) - 1), tgt.notion_size, h, w), dtype=torch.bool)
+        src_masks = torch.zeros((tgt.notion_size, (len(tgt.frames) - 1), h, w), dtype=torch.bool)
         for i, frame in enumerate(tgt.frames[1:]):
             for n in frame.notions:
                 if n.cls_id in valid_notion_ids:
-                    src_masks[i, valid_notion_ids.index(n.cls_id)] = n.segment.to(torch.bool)
-        src_msk_batch.append(src_masks)
+                    src_masks[valid_notion_ids.index(n.cls_id), i] = n.segment.to(torch.bool)
+        src_msk_batch.append(src_masks[notion_idxs].permute(1, 0, 2, 3))  # shuffle the source masks
 
     img_batch = torch.stack(img_batch, dim=0) # BxTxCxHxW
     tgt_msk_batch = torch.stack(tgt_msk_batch, dim=0) # BxNxHxW

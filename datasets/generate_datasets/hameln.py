@@ -14,15 +14,24 @@ from PIL import Image
 from data_utils import read_tiff
 
 
-train_img_size = 448
+train_img_size = 384
 data_root_hameln = "/home/yuan/data/HisMap/ikg_ml_dataset"
 colors = [
 (34, 139, 34),    # 'wald' (forest): Forest Green
 (124, 252, 0),    # 'grünland' (grassland): Lawn Green
 (220, 20, 60),    # 'siedlung' (settlement): Crimson
-(30, 144, 255),   # 'fließgewässer' (flowing water): Dodger Blue
-(0, 191, 255)     # 'stillgewässer' (still water): Deep Sky Blue
+(30, 144, 255),   # 'wasser' (flowing water): Dodger Blue
 ]
+semantics = ['forest', 'grass', 'settlement', 'wasser']
+
+def generate_colormap(data_root):
+    color_map = {}
+    for i, color in enumerate(colors):
+        color_map[semantics[i]] = color
+    color_map['nonlabeled'] = (255, 255, 255)
+    color_map['background'] = (0, 0, 0)
+    with open(os.path.join(data_root, 'color_map.json'), 'w') as f:
+        json.dump(color_map, f, indent=4)
 
 
 def rename_files_to_lowercase(folder_path):
@@ -90,7 +99,7 @@ def encode_labels(boolean_array):
     return encoded_array
 
 
-def generate_hameln(output_root, seperate_19xx_20xx=True):
+def generate_hameln_encoded_lbl(output_root, seperate_19xx_20xx=True):
     """
     Generate dataset from Hameln tk_image and label_tif folders.
     Args:
@@ -184,6 +193,97 @@ def generate_hameln(output_root, seperate_19xx_20xx=True):
                 Image.fromarray(lblc).save(os.path.join(lbl_dir, f"{filename}.png"))
 
 
+def generate_hameln_rgb_lbl(output_root, seperate_19xx_20xx=True):
+    """
+    Generate dataset from Hameln tk_image and label_tif folders.
+    Args:
+        output_root (str): Root directory to save the generated dataset.
+        seperate_19xx_20xx (bool): Whether to separate datasets for 19xx and 20xx tk images. 
+            If set False, datasets will be splited according to the year of tk images.
+    """
+    ROI_min = [7434, 10371]
+    ROI_max = [15113, 20459]
+    
+    tk_image_files = [x for x in os.listdir(os.path.join(data_root_hameln, 'tk_image')) \
+                      if x.endswith(".tif") and 'area' not in x]
+    tk_image_files = sorted(tk_image_files)
+    non_tk19xx_area = np.logical_not(read_tiff(os.path.join(data_root_hameln, 'tk_image', 'tk19xx_area.tif')))
+    non_tk20xx_area = np.logical_not(read_tiff(os.path.join(data_root_hameln, 'tk_image', 'tk20xx_area.tif')))
+    tk_labels = ['wald', 'grünland', 'siedlung', 'fließgewässer', 'stillgewässer']
+
+    for img_file in tk_image_files:
+        print(img_file)
+        year = img_file.split('.')[0]
+        if int(year) < 2000:
+            tk_area = non_tk19xx_area
+            dataset_split = "a"
+        else:
+            tk_area = non_tk20xx_area
+            dataset_split = "b"
+        # create output folders
+        img_dir = os.path.join(output_root, f'hameln.{dataset_split}', 'imgs')
+        lbl_dir = os.path.join(output_root, f'hameln.{dataset_split}', 'lbls')
+        os.makedirs(img_dir, exist_ok=True)
+        os.makedirs(lbl_dir, exist_ok=True)
+
+        tk_img = read_tiff(os.path.join(data_root_hameln, 'tk_image', img_file))
+        # make sure 3 channels for tk_img
+        if tk_img.ndim==2:
+            tk_img = tk_img[..., None].repeat(3, 2)
+        elif tk_img.shape[2]>3:
+            tk_img = tk_img[..., :3]
+        
+        # 0: background, 1: foreground, 255: not labeled
+        mask_labeled_area = read_tiff(os.path.join(data_root_hameln, 'label_tif', img_file))
+        # get crop parameters
+        xs, ys = np.where(mask_labeled_area == 1)
+        min_x, min_y = xs.min(), ys.min()
+        max_x, max_y = xs.max(), ys.max()
+        # crop to valid area for generating dataset
+        mask_unlabeled_area = np.logical_not(mask_labeled_area[min_x:max_x, min_y:max_y])
+        tk_img = tk_img[min_x:max_x, min_y:max_y]
+
+        all_labels = np.zeros(mask_unlabeled_area.shape, dtype=np.uint8)
+        all_labels[mask_unlabeled_area] = 255
+        for i, l in enumerate(tk_labels):
+            # 0: background, 1: foreground, 255: not labeled
+            lbl_mask = read_tiff(os.path.join(data_root_hameln, 'label_tif', img_file.replace('.tif', f'_{l}.tif')))
+            if lbl_mask is None:
+                lbl_mask = np.zeros(tk_area.shape, dtype=np.uint8)
+            # some tk image do not have valid mapping pixels, set the corresponding mask to background (0)
+            xs, ys = np.where(tk_area)
+            lbl_mask[xs, ys] = 0
+
+            # crop label to the valid area
+            lbl_mask = lbl_mask[min_x:max_x, min_y:max_y]
+            xs, ys = np.where(lbl_mask==1)
+            all_labels[xs, ys] = i + 1
+        # merge llb=5 and lbl=4 (stillgewässer and fließgewässer into wasser)
+        all_labels[all_labels == 5] = 4
+        # convert to rgb label
+        all_labels_color = np.zeros(all_labels.shape + (3,), dtype=np.uint8)
+        for i, color in enumerate(colors):
+            all_labels_color[all_labels == i + 1] = color
+        
+        for x in range(0, max_x - min_x, train_img_size):
+            for y in range(0, max_y - min_y, train_img_size):
+                # naming accordint to the original tk_image coordinates before cropping
+                filename = f"{year}_{x + min_x}_{y + min_y}"
+                if x + train_img_size <= tk_img.shape[0] and y + train_img_size <= tk_img.shape[1]:
+                    imgc = tk_img[x:x+train_img_size, y:y+train_img_size]
+                    lblc = all_labels_color[x:x+train_img_size, y:y+train_img_size]
+                else:
+                    imgc = np.zeros((train_img_size, train_img_size, 3), dtype=tk_img.dtype)
+                    lblc = np.zeros((train_img_size, train_img_size, 3), dtype=all_labels.dtype)
+                    imgc[:min(train_img_size, tk_img.shape[0] - x), :min(train_img_size, tk_img.shape[1] - y)] = \
+                        tk_img[x:min(x + train_img_size, tk_img.shape[0]), y:min(y + train_img_size, tk_img.shape[1])]
+                    lblc[:min(train_img_size, tk_img.shape[0] - x), :min(train_img_size, tk_img.shape[1] - y)] = \
+                        all_labels_color[x:min(x + train_img_size, tk_img.shape[0]), y:min(y + train_img_size, tk_img.shape[1])]
+
+                Image.fromarray(imgc).save(os.path.join(img_dir, f"{filename}.png"))
+                Image.fromarray(lblc).save(os.path.join(lbl_dir, f"{filename}.png"))
+
+
 def generate_data_info(root_dir, dataset_name):
     lbl_dir = os.path.join(root_dir, dataset_name, 'lbls')
     dinfo_filename = os.path.join(root_dir, dataset_name, f'{dataset_name}.json')
@@ -244,8 +344,6 @@ def train_test_val_split(root_dir, ratios={'train':0.7, 'test':0.2, 'val': 0.1},
                 for k, v in summary.items():
                     f.write(f"Class {k}: {v:.4f}\n")
                 f.write("\n")
-
-
 
 
 def select_roi_samples(dinfo_file, num_cls, num_samples_per_cls_per_sheet=1, min_ratio=0.1, max_ratio=0.8, save_path=None):
@@ -372,34 +470,11 @@ def visualize_selected_samples(selected_samples, root_dir):
 
 
 if __name__ == "__main__":
-    data_root = "/home/yuan/data/HisMap/syntra"
+    data_root = f"/home/yuan/data/HisMap/syntra{train_img_size}"
 
-    # generate_hameln(data_root)
+    # generate_hameln_rgb_lbl(data_root)
+    generate_colormap(os.path.join(data_root, 'hameln.a'))
+    generate_colormap(os.path.join(data_root, 'hameln.b'))
 
-    # datasets = sorted(os.listdir(data_root))
-    # for ds in datasets:
-    #     print(ds)
-    #     if ds.startswith('hameln'):
-    #         generate_data_info(data_root, ds)
 
-    ## generate lists for train/test/val splits
-    # train_test_val_split(data_root)
-
-    ## generate selected roi samples for few-shot training
-    # nshot = 8
-    # for d in os.listdir(data_root):
-    #     print(f"Processing dataset: {d}")
-    #     selected_samples = select_roi_samples(
-    #         dinfo_file=os.path.join(data_root, d, f"{d}.json"),
-    #         num_cls=5, 
-    #         num_samples_per_cls_per_sheet=nshot, 
-    #         min_ratio=0.05, 
-    #         max_ratio=0.8, 
-    #         save_path=os.path.join(data_root, d, f"selected_{nshot}.json")
-    #     )
-
-        # visualize_selected_samples(
-        #     selected_samples, 
-        #     root_dir=os.path.join(data_root, d)
-        # )
 

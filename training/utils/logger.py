@@ -147,6 +147,18 @@ class TensorBoardLogger(TensorBoardWriterWrapper):
         if not self._writer:
             return
         self._writer.add_hparams(hparams, meters)
+    
+    def log_images(self, tag: str, img_tensor: Tensor, step: int, dataformats: str) -> None:
+        """Add image data to TensorBoard.
+
+        Args:
+            tag (string): tag name used to group images
+            img_tensor (Tensor): image tensor to log
+            step (int, optional): step value to record
+        """
+        if not self._writer:
+            return
+        self._writer.add_images(tag, img_tensor, global_step=step, dataformats=dataformats)
 
 
 class Logger:
@@ -173,6 +185,10 @@ class Logger:
     ) -> None:
         if self.tb_logger:
             self.tb_logger.log_hparams(hparams, meters)
+    
+    def log_images(self, tag: str, img_tensor: Tensor, step: int, dataformats: str) -> None:
+        if self.tb_logger:
+            self.tb_logger.log_images(tag, img_tensor, step, dataformats)
 
 
 # cache the opened file object, so that different calls to `setup_logger`

@@ -186,8 +186,8 @@ class NotionAttention(nn.Module):
                 notion_pos = notion_pos.transpose(0, 1)
 
         # Self-Attention layers on prompt embeddings
-        for layer in self.sa_layers:
-            prompt_emb = layer(prompt=prompt_emb, prompt_pos=prompt_pos)
+        # for layer in self.sa_layers:
+        #     prompt_emb = layer(prompt=prompt_emb, prompt_pos=prompt_pos)
         # Cross-Attention layers on notion embeddings
         for layer in self.ca_layers:
             kwds = {}

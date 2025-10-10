@@ -1,3 +1,4 @@
+import copy
 import gc
 import json
 import logging
@@ -6,7 +7,7 @@ import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Iterable
 
 import numpy as np
 
@@ -23,11 +24,13 @@ from training.utils.checkpoint_utils import (
     exclude_params_matching_unix_pattern,
     load_state_dict_into_model,
     with_check_parameter_frozen,
+    exclude_frozen_params_byside_dora,
 )
 
 from training.utils.logger import Logger, setup_logging
 from training.optimizer import construct_optimizer
 from training.utils.data_utils import BatchedSrcTgtDatapoint
+from training.utils.distributed import all_reduce_max, barrier, get_rank
 
 from training.utils.train_utils import (
     AverageMeter,
@@ -49,6 +52,12 @@ from training.utils.train_utils import (
 
 
 CORE_LOSS_KEY = "core_loss"
+
+
+def unwrap_ddp_if_wrapped(model):
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        return model.module
+    return model
 
 
 @dataclass
@@ -128,7 +137,7 @@ class SingleGPUTrainer:
         logging: Dict[str, Any] = None,
         checkpoint: Dict[str, Any] = None,
         max_epochs: int,
-        mode: str = "train",
+        mode: str = "train_only",
         seed_value: int = 123,
         val_epoch_freq: int = 1,
         cuda: Dict[str, bool] = None,
@@ -152,7 +161,7 @@ class SingleGPUTrainer:
         self.loss_conf = loss
 
         self._setup_device()
-        os.makedirs(self.logging_conf.log_dir, exist_ok=True)
+        makedir(self.logging_conf.log_dir)
         setup_logging(
             __name__,
             output_dir=self.logging_conf.log_dir,
@@ -176,7 +185,7 @@ class SingleGPUTrainer:
             if self.distributed_rank == 0 and not os.path.exists(dst):
                 # Copy the "resume_from" checkpoint to the checkpoint folder
                 # if there is not a checkpoint to resume from already there
-                os.makedir(self.checkpoint_conf.save_dir)
+                makedir(self.checkpoint_conf.save_dir)
                 g_pathmgr.copy(self.checkpoint_conf.resume_from, dst)
             
         self.load_checkpoint()
@@ -214,6 +223,24 @@ class SingleGPUTrainer:
         if self.data_conf.get(val_phase, None) is not None:
             val_keys = collect_dict_keys(self.data_conf[val_phase])
         # Additional checks on the sanity of the config for val d
+
+        auto_parse = self.data_conf.get(Phase.TRAIN).get("auto_parse_datasets", None)
+        if auto_parse is not None:
+            data_cfg = self.data_conf.get(Phase.TRAIN).datasets
+            root_folder = data_cfg[0].dataset.datasets[0].syntra_dataset.root_folder
+            if auto_parse == 'all':
+                dataset_names = os.listdir(root_folder)
+            elif isinstance(auto_parse, Iterable):
+                dataset_names = auto_parse
+            else:
+                raise ValueError(f"Unknown auto_parse_datasets value {auto_parse}, should be 'all' or a list of dataset names.")
+            logging.info(f"Auto parsing datasets from {root_folder}, found {dataset_names}.")
+            datasets_cfg = []
+            for dn in dataset_names:
+                cur_dataset_cfg = copy.deepcopy(data_cfg[0].dataset.datasets[0])
+                cur_dataset_cfg.syntra_dataset.root_folder = os.path.join(root_folder, dn)
+                datasets_cfg.append(cur_dataset_cfg)
+            data_cfg[0].dataset.datasets = datasets_cfg
 
         logging.info("Setting up components: Model, loss, optim, meters etc.")
         self.epoch = 0
@@ -273,7 +300,7 @@ class SingleGPUTrainer:
         if ckpt_path is None:
             self._init_model_state()
         else:
-            if self.checkpoint_conf.initialize_after_preemption:
+            if self.checkpoint_conf.initialize_after_preemption or self.model.dora_rank > 0:
                 self._call_model_initializer()
             self._load_resuming_checkpoint(ckpt_path)
     
@@ -308,6 +335,9 @@ class SingleGPUTrainer:
             )
             self.model = model_weight_initializer(model=self.model)
 
+            if self.model.dora_rank > 0:
+                self.model.dora_adapt()
+
     def _load_resuming_checkpoint(self, ckpt_path: str):
         logging.info(f"Resuming training from {ckpt_path}")
 
@@ -316,6 +346,7 @@ class SingleGPUTrainer:
         load_state_dict_into_model(
             model=self.model,
             state_dict=checkpoint["model"],
+            dora_adapted = self.model.dora_rank > 0,
             ignore_missing_keys=self.checkpoint_conf.skip_saving_parameters,
         )
 
@@ -345,7 +376,7 @@ class SingleGPUTrainer:
 
     def save_checkpoint(self, epoch, checkpoint_names=None):
         checkpoint_folder = self.checkpoint_conf.save_dir
-        os.makedirs(checkpoint_folder)
+        makedir(checkpoint_folder)
         if checkpoint_names is None:
             checkpoint_names = ["checkpoint"]
             if (
@@ -362,6 +393,8 @@ class SingleGPUTrainer:
         state_dict = exclude_params_matching_unix_pattern(
             patterns=self.checkpoint_conf.skip_saving_parameters, state_dict=state_dict
         )
+        if hasattr(self.model, "dora_rank") and self.model.dora_rank > 0:
+            state_dict = exclude_frozen_params_byside_dora(state_dict)
 
         checkpoint = {
             "model": state_dict,
@@ -427,7 +460,7 @@ class SingleGPUTrainer:
     ):
 
         outputs = model(batch)
-        targets = batch.src_mask_batch
+        targets = batch.tgt_mask_batch
         batch_size = len(batch.img_batch)
 
         key = batch.dict_key  # key for dataset
@@ -625,6 +658,14 @@ class SingleGPUTrainer:
                             progress_meter.val,
                             self.steps[phase],
                         )
+                
+                if data_iter % self.logging_conf.log_visual_frequency == 0:
+                    if hasattr(unwrap_ddp_if_wrapped(self.model), "log_visuals"):
+                        unwrap_ddp_if_wrapped(self.model).log_visuals(
+                            logger=self.logger,
+                            global_step=self.steps[phase],
+                            phase=phase,
+                        )
 
             # Catching NaN/Inf errors in the loss
             except FloatingPointError as e:
@@ -683,6 +724,136 @@ class SingleGPUTrainer:
         # epoch was incremented in the loop but the val step runs out of the loop
         self.epoch -= 1 
 
+    def run_val(self):
+        if not self.val_dataset:
+            return
+
+        dataloader = self.val_dataset.get_loader(epoch=int(self.epoch))
+        outs = self.val_epoch(dataloader, phase=Phase.VAL)
+        del dataloader
+        gc.collect()
+        self.logger.log_dict(outs, self.epoch)  # Logged only on rank 0
+
+        if self.distributed_rank == 0:
+            with g_pathmgr.open(
+                os.path.join(self.logging_conf.log_dir, "val_stats.json"),
+                "a",
+            ) as f:
+                f.write(json.dumps(outs) + "\n")
+
+    def val_epoch(self, val_loader, phase):
+        batch_time = AverageMeter("Batch Time", self.device, ":.2f")
+        data_time = AverageMeter("Data Time", self.device, ":.2f")
+        mem = MemMeter("Mem (GB)", self.device, ":.2f")
+
+        iters_per_epoch = len(val_loader)
+
+        curr_phases = [phase]
+        curr_models = [self.model]
+
+        loss_names = []
+        for p in curr_phases:
+            for key in self.loss.keys():
+                loss_names.append(f"Losses/{p}_{key}_loss")
+
+        loss_mts = OrderedDict(
+            [(name, AverageMeter(name, self.device, ":.2e")) for name in loss_names]
+        )
+        extra_loss_mts = {}
+
+        for model in curr_models:
+            model.eval()
+            if hasattr(unwrap_ddp_if_wrapped(model), "on_validation_epoch_start"):
+                unwrap_ddp_if_wrapped(model).on_validation_epoch_start()
+
+        progress = ProgressMeter(
+            iters_per_epoch,
+            [batch_time, data_time, mem, self.time_elapsed_meter, *loss_mts.values()],
+            self._get_meters(curr_phases),
+            prefix="Val Epoch: [{}]".format(self.epoch),
+        )
+
+        end = time.time()
+
+        for data_iter, batch in enumerate(val_loader):
+
+            # measure data loading time
+            data_time.update(time.time() - end)
+
+            batch = batch.to(self.device, non_blocking=True)
+
+            # compute output
+            with torch.no_grad():
+                with torch.cuda.amp.autocast(
+                    enabled=(self.optim_conf.amp.enabled if self.optim_conf else False),
+                    dtype=(
+                        get_amp_type(self.optim_conf.amp.amp_dtype)
+                        if self.optim_conf
+                        else None
+                    ),
+                ):
+                    for phase, model in zip(curr_phases, curr_models):
+                        loss_dict, batch_size, extra_losses = self._step(
+                            batch,
+                            model,
+                            phase,
+                        )
+
+                        assert len(loss_dict) == 1
+                        loss_key, loss = loss_dict.popitem()
+
+                        loss_mts[loss_key].update(loss.item(), batch_size)
+
+                        for k, v in extra_losses.items():
+                            if k not in extra_loss_mts:
+                                extra_loss_mts[k] = AverageMeter(k, self.device, ":.2e")
+                            extra_loss_mts[k].update(v.item(), batch_size)
+
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            self.time_elapsed_meter.update(
+                time.time() - self.start_time + self.ckpt_time_elapsed
+            )
+
+            if torch.cuda.is_available():
+                mem.update(reset_peak_usage=True)
+
+            if data_iter % self.logging_conf.log_freq == 0:
+                progress.display(data_iter)
+
+            if data_iter % self.logging_conf.log_scalar_frequency == 0:
+                # Log progress meters.
+                for progress_meter in progress.meters:
+                    self.logger.log(
+                        os.path.join("Step_Stats", phase, progress_meter.name),
+                        progress_meter.val,
+                        self.steps[Phase.VAL],
+                    )
+
+            if data_iter % 10 == 0:
+                dist.barrier()
+
+        self.est_epoch_time[phase] = batch_time.avg * iters_per_epoch
+        self._log_timers(phase)
+        for model in curr_models:
+            if hasattr(unwrap_ddp_if_wrapped(model), "on_validation_epoch_end"):
+                unwrap_ddp_if_wrapped(model).on_validation_epoch_end()
+
+        out_dict = self._log_meters_and_save_best_ckpts(curr_phases)
+
+        for k, v in loss_mts.items():
+            out_dict[k] = v.avg
+        for k, v in extra_loss_mts.items():
+            out_dict[k] = v.avg
+
+        for phase in curr_phases:
+            out_dict.update(self._get_trainer_state(phase))
+        self._reset_meters(curr_phases)
+        logging.info(f"Meters: {out_dict}")
+        return out_dict
+
     def run(self):
         assert self.mode in ["train", "train_only", "val"]
         if self.mode == "train":
@@ -700,3 +871,98 @@ class SingleGPUTrainer:
             self.run_val()
         elif self.mode == "train_only":
             self.run_train()
+    
+    def _log_loss_detailed_and_return_core_loss(self, loss, loss_str, step):
+        core_loss = loss.pop(CORE_LOSS_KEY)
+        if step % self.logging_conf.log_scalar_frequency == 0:
+            for k in loss:
+                log_str = os.path.join(loss_str, k)
+                self.logger.log(log_str, loss[k], step)
+        return core_loss
+    
+    def _log_timers(self, phase):
+        time_remaining = 0
+        epochs_remaining = self.max_epochs - self.epoch - 1
+        val_epochs_remaining = sum(
+            n % self.val_epoch_freq == 0 for n in range(self.epoch, self.max_epochs)
+        )
+
+        # Adding the guaranteed val run at the end if val_epoch_freq doesn't coincide with
+        # the end epoch.
+        if (self.max_epochs - 1) % self.val_epoch_freq != 0:
+            val_epochs_remaining += 1
+
+        # Remove the current val run from estimate
+        if phase == Phase.VAL:
+            val_epochs_remaining -= 1
+
+        time_remaining += (
+            epochs_remaining * self.est_epoch_time[Phase.TRAIN]
+            + val_epochs_remaining * self.est_epoch_time[Phase.VAL]
+        )
+
+        self.logger.log(
+            os.path.join("Step_Stats", phase, self.time_elapsed_meter.name),
+            self.time_elapsed_meter.val,
+            self.steps[phase],
+        )
+
+        logging.info(f"Estimated time remaining: {human_readable_time(time_remaining)}")
+
+    def _reset_meters(self, phases: str) -> None:
+        for meter in self._get_meters(phases).values():
+            meter.reset()
+    
+    def _log_sync_data_times(self, phase, data_times):
+        data_times = all_reduce_max(torch.tensor(data_times)).tolist()
+        steps = range(self.steps[phase] - len(data_times), self.steps[phase])
+        for step, data_time in zip(steps, data_times):
+            if step % self.logging_conf.log_scalar_frequency == 0:
+                self.logger.log(
+                    os.path.join("Step_Stats", phase, "Data Time Synced"),
+                    data_time,
+                    step,
+                )
+    
+    def _log_meters_and_save_best_ckpts(self, phases: List[str]):
+        logging.info("Synchronizing meters")
+        out_dict = {}
+        checkpoint_save_keys = []
+        for key, meter in self._get_meters(phases).items():
+            meter_output = meter.compute_synced()
+            is_better_check = getattr(meter, "is_better", None)
+
+            for meter_subkey, meter_value in meter_output.items():
+                out_dict[os.path.join("Meters_train", key, meter_subkey)] = meter_value
+
+                if is_better_check is None:
+                    continue
+
+                tracked_meter_key = os.path.join(key, meter_subkey)
+                if tracked_meter_key not in self.best_meter_values or is_better_check(
+                    meter_value,
+                    self.best_meter_values[tracked_meter_key],
+                ):
+                    self.best_meter_values[tracked_meter_key] = meter_value
+
+                    if (
+                        self.checkpoint_conf.save_best_meters is not None
+                        and key in self.checkpoint_conf.save_best_meters
+                    ):
+                        checkpoint_save_keys.append(tracked_meter_key.replace("/", "_"))
+
+        if len(checkpoint_save_keys) > 0:
+            self.save_checkpoint(self.epoch + 1, checkpoint_save_keys)
+        
+        return out_dict
+    
+    def _get_trainer_state(self, phase):
+        return {
+            "Trainer/where": self.where,
+            "Trainer/epoch": self.epoch,
+            f"Trainer/steps_{phase}": self.steps[phase],
+        }
+    
+    def is_intermediate_val_epoch(self, epoch):
+        return epoch % self.val_epoch_freq == 0 and epoch < self.max_epochs - 1
+

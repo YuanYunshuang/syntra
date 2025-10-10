@@ -79,6 +79,7 @@ def resize(datapoint, index, size, max_size=None, square=False, v2=False):
         if v2
         else datapoint.frames[index].data.size
     )
+
     if v2:
         datapoint.frames[index].data = Fv2.resize(
             datapoint.frames[index].data, size, antialias=True
@@ -174,6 +175,7 @@ class RandomResizeAPI:
                 datapoint = resize(
                     datapoint, i, size, self.max_size, square=self.square, v2=self.v2
                 )
+            datapoint.size = (size, size) if self.square else datapoint.frames[0].size
             return datapoint
         for i in range(len(datapoint.frames)):
             size = random.choice(self.sizes)
@@ -393,10 +395,10 @@ class RandomAffine:
                         interpolation=InterpolationMode.NEAREST,
                         fill=0.0,
                     )
-                    if img_idx == 0 and transformed_mask.max() == 0:
-                        # We are dealing with a SynTra datapoint and the notion is not visible in the first frame
-                        # Return the datapoint without transformation
-                        return None
+                    # if img_idx == 0 and transformed_mask.max() == 0:
+                    #     # We are dealing with a SynTra datapoint and the notion is not visible in the first frame
+                    #     # Return the datapoint without transformation
+                    #     return None
                     transformed_masks.append(transformed_mask.squeeze())
 
             for i in range(len(img.notions)):

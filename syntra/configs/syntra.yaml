@@ -1,21 +1,23 @@
 # @package _global_
 
 scratch:
-  resolution: 448
-  train_batch_size: 1
-  num_train_workers: 0
-  num_src: 3
+  resolution: 384
+  train_batch_size: 8
+  num_train_workers: 4
+  num_src: 1
+  num_notions: 1
+  num_tokens_per_notion: 4
   max_num_cls: 4
-  base_lr: 5.0e-6
-  vision_lr: 3.0e-06
+  base_lr: 1.0e-4
+  vision_lr: 5.0e-05
   phases_per_epoch: 1
   num_iterations: 40000
-  num_epochs: 40
+  num_epochs: 5000
 
 dataset:
   name: SynTra
-  root: /home/yuan/data/HisMap/syntra
-  split: paring_8_intercls.json
+  root: /home/yuan/data/HisMap/syntra384
+  split: paring_50_intercls.json
   multiplier: 1
 
 syntra:
@@ -72,8 +74,8 @@ trainer:
       dim_feedforward: 1024
       num_sa_layers: 4
       num_ca_layers: 4
-      pos_enc_at_attn: true
-      pos_enc_at_cross_attn_keys: true
+      pos_enc_at_attn: false
+      pos_enc_at_cross_attn_keys: false
       pos_enc_at_cross_attn_queries: false
       activation: relu
       cross_attention:
@@ -94,6 +96,20 @@ trainer:
         num_heads: 1
         downsample_rate: 1
         dropout: 0.1
+    # input image resolution
+    image_size: ${scratch.resolution}
+    # dora rank for image encoder, dora_rank=0 means no dora
+    dora_rank: 4
+    # number of notions == number of masks predicted for each target image
+    num_notions: ${scratch.num_notions}
+    # whether to use high-resolution feature maps in the SAM mask decoder
+    use_high_res_features: true
+    # whether to use sigmoid to restrict ious prediction to [0-1]
+    iou_prediction_use_sigmoid: true
+    # Whether to predict if there is an object in the frame
+    pred_obj_scores: true
+    # Whether to use an MLP to predict object scores
+    pred_obj_scores_mlp: true
 
   data:
     train:
@@ -102,6 +118,7 @@ trainer:
       batch_sizes:
         - ${scratch.train_batch_size}
         - ${scratch.train_batch_size}
+      auto_parse_datasets: ['siegfried.vineyard', 'siegfried.railway'] # all or a list of dataset names 
 
       datasets:
         - _target_: training.dataset.utils.RepeatFactorWrapper
@@ -110,34 +127,18 @@ trainer:
             datasets:
             - _target_: training.dataset.syntra_dataset.SynTraDataset
               transforms: ${syntra.train_transforms}
-              notion_size: ${scratch.num_src}
+              notion_size: ${scratch.num_notions}
               training: true
               syntra_dataset:
                 _target_: training.dataset.syntra_raw_dataset.PNGRawDataset
-                root_folder: ${dataset.root}/hameln.a
+                root_folder: ${dataset.root}
                 data_info_file: ${dataset.split}
               sampler:
                 _target_: training.dataset.syntra_sampler.RandomUniformSampler
                 num_src: ${scratch.num_src}
                 max_num_cls: ${scratch.max_num_cls}
               multiplier: ${dataset.multiplier}
-        - _target_: training.dataset.utils.RepeatFactorWrapper
-          dataset:
-            _target_: training.dataset.utils.ConcatDataset
-            datasets:
-            - _target_: training.dataset.syntra_dataset.SynTraDataset
-              transforms: ${syntra.train_transforms}
-              notion_size: ${scratch.num_src}
-              training: true
-              syntra_dataset:
-                _target_: training.dataset.syntra_raw_dataset.PNGRawDataset
-                root_folder: ${dataset.root}/hameln.b
-                data_info_file: ${dataset.split}
-              sampler:
-                _target_: training.dataset.syntra_sampler.RandomUniformSampler
-                num_src: ${scratch.num_src}
-                max_num_cls: ${scratch.max_num_cls}
-              multiplier: ${dataset.multiplier}
+
       shuffle: True
       num_workers: ${scratch.num_train_workers}
       pin_memory: True
@@ -172,9 +173,16 @@ trainer:
     options:
       lr:
         - scheduler:
-            _target_: fvcore.common.param_scheduler.CosineParamScheduler
-            start_value: ${scratch.base_lr}
-            end_value: ${divide:${scratch.base_lr},10}
+            _target_: fvcore.common.param_scheduler.CompositeParamScheduler
+            schedulers:
+              - _target_: fvcore.common.param_scheduler.LinearParamScheduler
+                start_value: 1.0e-7
+                end_value: ${scratch.base_lr}
+              - _target_: fvcore.common.param_scheduler.CosineParamScheduler
+                start_value: ${scratch.base_lr}
+                end_value: ${divide:${scratch.base_lr},100}
+            lengths: [0.1, 0.9]  # 10% warmup, 90% cosine decay
+            interval_scaling: ['rescaled', 'rescaled']
         - scheduler:
             _target_: fvcore.common.param_scheduler.CosineParamScheduler
             start_value: ${scratch.vision_lr}
@@ -205,6 +213,7 @@ trainer:
       pred_obj_scores: true
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1.0
+      ce_loss_for_mask: true
 
   logging:
     tensorboard_writer:
@@ -214,6 +223,7 @@ trainer:
       should_log: True
     log_dir: ${launcher.experiment_log_dir}/logs
     log_freq: 10
+    log_visual_frequency: 50
 
   # initialize from a SAM 2 checkpoint
   checkpoint:

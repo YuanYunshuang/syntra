@@ -86,6 +86,26 @@ def exclude_params_matching_unix_pattern(
     return {k: v for k, v in state_dict.items() if k not in excluded_keys}
 
 
+def exclude_frozen_params_byside_dora(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """
+    Remove from the state dictionary the parameters that are frozen by DoRA
+
+    Args:
+        state_dict: the dictionary to filter
+
+    Returns:
+        A new state dictionary
+    """
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if 'image_encoder.trunk' in key:
+            if 'qkv' in key and ('m_' in key or 'lora' in key):
+                new_state_dict[key] = value
+        else:
+            new_state_dict[key] = value
+    return new_state_dict
+
+
 def _get_state_dict_summary(state_dict: Dict[str, torch.Tensor]):
     keys = []
     trace = []
@@ -330,6 +350,7 @@ def check_load_state_dict_errors(
 def load_state_dict_into_model(
     state_dict: Dict,
     model: nn.Module,
+    dora_adapted: bool = False,
     strict: bool = True,
     ignore_missing_keys: List[str] = None,
     ignore_unexpected_keys: List[str] = None,
@@ -350,6 +371,9 @@ def load_state_dict_into_model(
         for f in checkpoint_kernels:
             state_dict = f(state_dict=state_dict)
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+
+    if dora_adapted:
+        ignore_missing_keys = [k for k in missing_keys if 'image_encoder.trunk' in k]
 
     check_load_state_dict_errors(
         missing_keys,

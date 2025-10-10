@@ -20,7 +20,7 @@ class PromptEncoder(nn.Module):
         embed_dim: int,
         image_embedding_size: Tuple[int, int],
         input_image_size: Tuple[int, int],
-        mask_in_chans: int,
+        num_tokens_per_notion: int,
         notion_attention: nn.Module,
         num_notion_embeddings: int = 4,
         activation: Type[nn.Module] = nn.GELU,
@@ -34,8 +34,7 @@ class PromptEncoder(nn.Module):
             image embedding, as (H, W).
           input_image_size (int): The padded size of the image as input
             to the image encoder, as (H, W).
-          mask_in_chans (int): The number of hidden channels used for
-            encoding input masks.
+          num_tokens_per_notion (int): The number of tokens to prepresent each notion
           activation (nn.Module): The activation to use when encoding
             input masks.
         """
@@ -44,9 +43,10 @@ class PromptEncoder(nn.Module):
         self.input_image_size = input_image_size
         self.image_embedding_size = image_embedding_size
         self.num_notion_embeddings = num_notion_embeddings 
+        self.num_tokens_per_notion = num_tokens_per_notion
 
         self.pe_layer = PositionEmbeddingRandom(embed_dim // 2)
-        self.notion_embeddings = nn.Embedding(num_notion_embeddings, embed_dim) 
+        self.notion_embeddings = nn.Embedding(num_tokens_per_notion, embed_dim) 
 
         # downscale the input mask to the image embedding size
         mask_downscaling = []
@@ -54,12 +54,19 @@ class PromptEncoder(nn.Module):
             in_dim = 1 if i == 0 else 2**(i+1)
             out_dim = 2**(i+2)
             mask_downscaling.extend([
-                nn.Conv2d(in_dim, out_dim, kernel_size=2, stride=2),
+                nn.Conv2d(in_dim, out_dim, kernel_size=2, stride=2, bias=False),
                 LayerNorm2d(out_dim),
                 activation(),
             ])
         mask_downscaling.append(nn.Conv2d(out_dim, embed_dim, kernel_size=1))
         self.mask_downscaling = nn.Sequential(*mask_downscaling)
+
+        self.merge_image_mask_pair = nn.Sequential(
+            nn.Conv2d(embed_dim, embed_dim, kernel_size=1),
+            LayerNorm2d(embed_dim),
+            activation(),
+            nn.Conv2d(embed_dim, embed_dim, kernel_size=1),
+        )
 
         self.notion_attention = notion_attention
 
@@ -87,9 +94,9 @@ class PromptEncoder(nn.Module):
         Learn notion features from the source embeddings and masks.
         Arguments:
           src_emb (torch.Tensor): source image embeddings, in the shape
-            BxCxHxW
+            BxTxCxHxW
           masks (torch.Tensor): binary masks of the notions, in the shape
-            BxMxHxW, where M is the number of masks for each src image.
+            BxTxNxHxW, where M is the number of masks for each src image.
         Returns:
           torch.Tensor: notion features, in the shape BxNxC, where N is
             the number of notions.
@@ -99,27 +106,49 @@ class PromptEncoder(nn.Module):
         H, W = src_emb.shape[-2:]
         L = T * H * W
         mask_embeddings = self.mask_downscaling(masks.flatten(0, 2).unsqueeze(1))  # (B*T*N)xCxhxw
-        mask_embeddings = mask_embeddings.view(B, T, N, self.embed_dim, *self.image_embedding_size)
+        mask_embeddings = mask_embeddings.view(B, T, N, self.embed_dim, H, W)
+
+        # from PIL import Image
+        # for b in range(B):
+        #     for t in range(T):
+        #         cur_masks = masks[b, t]
+        #         cur_src = src_emb[b, t].detach().max(dim=0).values
+        #         cur_src = torch.nn.functional.interpolate(
+        #             cur_src.unsqueeze(0).unsqueeze(0), size=self.input_image_size, mode="bilinear", align_corners=False
+        #         ).squeeze()
+        #         cur_src = (cur_src - cur_src.min()) / (cur_src.max() - cur_src.min())
+        #         Image.fromarray((cur_masks[:3].permute(1, 2, 0).cpu().numpy()*255).astype('uint8')).save('/home/yuan/Downloads/mask.png')
+        #         Image.fromarray((cur_src * 255).cpu().numpy().astype('uint8')).save('/home/yuan/Downloads/src.png')
+        #         print('save mask and src image')
 
         # merge src_emb and mask_embeddings 
         prompt_embeddings = src_emb.unsqueeze(2) * mask_embeddings
+        prompt_embeddings = self.merge_image_mask_pair(prompt_embeddings.flatten(0, 2)) # (B*T*N)xCxHxW
+        prompt_embeddings = prompt_embeddings.view(B, T, N, self.embed_dim, H, W) # BxTxNxCxHxW
+        dense_embeddings = prompt_embeddings.max(dim=1).values # BxNxCxHxW
+
         prompt_embeddings = prompt_embeddings.permute(0, 2, 1, 4, 5, 3) # BxNxTxHxWxC
         prompt_embeddings = prompt_embeddings.flatten(0, 1).flatten(1, 3) # (B*N)x(L)xC, L=T*H*W
 
-        src_pos_emb = src_pos_emb.unsqueeze(2).repeat(1, 1, N, 1, 1, 1) # BxTxNxHxWxC
-        src_pos_emb = src_pos_emb.permute(0, 2, 1, 4, 5, 3) # BxNxTxHxWxC
-        src_pos_emb = src_pos_emb.flatten(0, 1).flatten(1, 3) # (B*N)x(L)xC, L=T*H*W
+        # src_pos_emb = src_pos_emb.unsqueeze(2).repeat(1, 1, N, 1, 1, 1) # BxTxNxHxWxC
+        # src_pos_emb = src_pos_emb.permute(0, 2, 1, 4, 5, 3) # BxNxTxHxWxC
+        # src_pos_emb = src_pos_emb.flatten(0, 1).flatten(1, 3) # (B*N)x(L)xC, L=T*H*W
+        src_pos_emb = None
 
         # process notion embeddings with notion attention
-        notion_embeddings = self.notion_embeddings.weight.unsqueeze(0).repeat(B, 1, 1).unsqueeze(2).flatten(0, 1)  # (B*N)x1xC
+        # Nt, C -> 1xNtxC -> (B*N)xNtxC
+        notion_embeddings = self.notion_embeddings.weight.unsqueeze(0).repeat(B*N, 1, 1)
+        # 1xCxHxW -> (B*N)x(L)xC, L=T*H*W
+        pos_emb = self.get_dense_pe().flatten(2).permute(0, 2, 1).unsqueeze(0)
+        pos_emb = pos_emb.repeat(B*N, T, 1, 1).view(B*N, L, self.embed_dim)
         notions = self.notion_attention(
             prompt_embeddings,
             notion_embeddings,
-            src_pos_emb,
-        )
+            pos_emb,
+        ) # (B*N_notion)xN_tokenxC
 
-        notions = notions.squeeze(1).view(B, N, self.embed_dim)
+        notions = notions.view(B, N, self.num_tokens_per_notion, self.embed_dim)
 
-        return notions
+        return notions, dense_embeddings
     
   

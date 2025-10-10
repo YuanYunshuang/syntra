@@ -18,15 +18,11 @@ class MaskDecoder(nn.Module):
         *,
         transformer_dim: int,
         transformer: nn.Module,
-        num_multimask_outputs: int = 3,
         activation: Type[nn.Module] = nn.GELU,
         iou_head_depth: int = 3,
         iou_head_hidden_dim: int = 256,
         use_high_res_features: bool = False,
         iou_prediction_use_sigmoid=False,
-        dynamic_multimask_via_stability=False,
-        dynamic_multimask_stability_delta=0.05,
-        dynamic_multimask_stability_thresh=0.98,
         pred_obj_scores: bool = False,
         pred_obj_scores_mlp: bool = False,
         use_multimask_token_for_obj_ptr: bool = False,
@@ -51,10 +47,8 @@ class MaskDecoder(nn.Module):
         self.transformer_dim = transformer_dim
         self.transformer = transformer
 
-        self.num_multimask_outputs = num_multimask_outputs
-
         self.iou_token = nn.Embedding(1, transformer_dim)
-        self.num_mask_tokens = num_multimask_outputs + 1
+        self.num_mask_tokens = 1
         self.mask_tokens = nn.Embedding(self.num_mask_tokens, transformer_dim)
 
         self.pred_obj_scores = pred_obj_scores
@@ -82,11 +76,8 @@ class MaskDecoder(nn.Module):
                 transformer_dim, transformer_dim // 4, kernel_size=1, stride=1
             )
 
-        self.output_hypernetworks_mlps = nn.ModuleList(
-            [
-                MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
-                for i in range(self.num_mask_tokens)
-            ]
+        self.output_hypernetworks_mlp = MLP(
+            transformer_dim, transformer_dim, transformer_dim // 8, 3
         )
 
         self.iou_prediction_head = MLP(
@@ -101,29 +92,28 @@ class MaskDecoder(nn.Module):
             if pred_obj_scores_mlp:
                 self.pred_obj_score_head = MLP(transformer_dim, transformer_dim, 1, 3)
 
-        # When outputting a single mask, optionally we can dynamically fall back to the best
-        # multimask output token if the single mask output token gives low stability scores.
-        self.dynamic_multimask_via_stability = dynamic_multimask_via_stability
-        self.dynamic_multimask_stability_delta = dynamic_multimask_stability_delta
-        self.dynamic_multimask_stability_thresh = dynamic_multimask_stability_thresh
-
     def forward(
         self,
         image_embeddings: torch.Tensor,
         image_pe: torch.Tensor,
         notion_embeddings: torch.Tensor,
-        high_res_features: Optional[List[torch.Tensor]] = None,
+        dense_prompt_embeddings: Optional[torch.Tensor] = None,
+        high_res_features: Optional[List[torch.Tensor]] = None, 
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Predict masks given image and prompt embeddings.
 
         Arguments:
-          image_embeddings (torch.Tensor): the embeddings from the image encoder
-          image_pe (torch.Tensor): positional encoding with the shape of image_embeddings
-          sparse_prompt_embeddings (torch.Tensor): the embeddings of the points and boxes
-          dense_prompt_embeddings (torch.Tensor): the embeddings of the mask inputs
-          multimask_output (bool): Whether to return multiple masks or a single
-            mask.
+          image_embeddings (torch.Tensor): image embeddings from
+            the image encoder, of shape [b, c, h, w]
+          image_pe (torch.Tensor): positional encoding for the image
+          notion_embeddings (torch.Tensor): prompt embeddings from
+            the prompt encoder, of shape [b, n, c]
+          high_res_features (list(torch.Tensor), optional): high
+            resolution feature maps from the image encoder of shape
+            [b, c, h', w'] and [b, c, h'', w''], where h' > h and
+            w' > w, h'' > h' and w'' > w'. These are used to
+            produce higher-resolution masks.
 
         Returns:
           torch.Tensor: batched predicted masks
@@ -134,81 +124,86 @@ class MaskDecoder(nn.Module):
             image_embeddings=image_embeddings,
             image_pe=image_pe,
             notion_embeddings=notion_embeddings,
+            dense_prompt_embeddings=dense_prompt_embeddings,
             high_res_features=high_res_features,
         )
 
-        # Select the correct mask or masks for output
-        masks = masks[:, 0:1, :, :]
-        iou_pred = iou_pred[:, 0:1]
-
-        # Take the mask output token. Here we *always* use the token for single mask output.
-        # At test time, even if we track after 1-click (and using multimask_output=True),
-        # we still take the single mask token here. The rationale is that we always track
-        # after multiple clicks during training, so the past tokens seen during training
-        # are always the single mask token (and we'll let it be the object-memory token).
-        sam_tokens_out = mask_tokens_out[:, 0:1]  # [b, 1, c] shape
-
-        # Prepare output
-        return masks, iou_pred, sam_tokens_out, object_score_logits
+        return masks, iou_pred, mask_tokens_out, object_score_logits
 
     def predict_masks(
         self,
         image_embeddings: torch.Tensor,
         image_pe: torch.Tensor,
         notion_embeddings: torch.Tensor,
+        dense_prompt_embeddings: Optional[torch.Tensor] = None,
         high_res_features: Optional[List[torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predicts masks. See 'forward' for more details."""
         # Concatenate output tokens
         s = 0
+        B, N, Nt, C = notion_embeddings.shape # B x N x Nt x C
+        if self.pred_obj_scores:
+            output_tokens = torch.cat(
+                [
+                    self.obj_score_token.weight, # 1x256
+                    self.iou_token.weight, # 1x256
+                    self.mask_tokens.weight, # 1x256
+                ],
+                dim=0,
+            ) # 3x256
+            s = 1
+        else:
+            output_tokens = torch.cat(
+                [
+                    self.iou_token.weight, # 1x256
+                    self.mask_tokens.weight, # 1x256
+                ], dim=1
+            ) # 2x256
 
-        output_tokens = torch.cat(
-            [self.iou_token.weight, self.mask_tokens.weight], dim=0
-        )
-        output_tokens = output_tokens.unsqueeze(0).expand(
-            notion_embeddings.size(0), -1, -1
-        )
-        tokens = torch.cat((output_tokens, notion_embeddings), dim=1)
+        output_tokens = output_tokens.unsqueeze(0).expand(B*N, -1, -1) # (B*N)x2x256 or (B*N)x3x256
+        tokens = torch.cat((output_tokens, notion_embeddings.flatten(0, 1)), dim=1) # (B*N)x(2+Nt)x256 or (B*N)x(3+Nt)x256
 
-        # Expand per-image data in batch direction to be per-mask
-        assert image_embeddings.shape[0] == tokens.shape[0]
-        src = image_embeddings
-        src = src + notion_embeddings
+        # repeat target image embeddings and pos emb
+        tgt = torch.repeat_interleave(image_embeddings.unsqueeze(1), N, dim=1).flatten(0, 1) # (B*N)xCxHxW
         assert (
             image_pe.size(0) == 1
         ), "image_pe should have size 1 in batch dim (from `get_dense_pe()`)"
-        pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
-        b, c, h, w = src.shape
+        pos_tgt = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0) # Bx256xHxW
+        b, c, h, w = tgt.shape
 
+        if dense_prompt_embeddings is not None:
+            tgt = tgt + dense_prompt_embeddings.flatten(0, 1)
         # Run the transformer
-        hs, src = self.transformer(src, pos_src, tokens)
-        iou_token_out = hs[:, s, :]
-        mask_tokens_out = hs[:, s + 1 : (s + 1 + self.num_mask_tokens), :]
+        hs, tgt = self.transformer(tgt, pos_tgt, tokens)
+        iou_token_out = hs[:, s+1, :] # (B*N)x256
+        mask_token_out = hs[:, s+2, :] # (B*N)x256
 
         # Upscale mask embeddings and predict masks using the mask tokens
-        src = src.transpose(1, 2).view(b, c, h, w)
+        tgt = tgt.transpose(1, 2).view(b, c, h, w) # (BN)x(HW)xC -> (BN)xCxHxW
         if not self.use_high_res_features:
-            upscaled_embedding = self.output_upscaling(src)
+            upscaled_embedding = self.output_upscaling(tgt)
         else:
             dc1, ln1, act1, dc2, act2 = self.output_upscaling
             feat_s0, feat_s1 = high_res_features
-            upscaled_embedding = act1(ln1(dc1(src) + feat_s1))
+            feat_s0 = torch.repeat_interleave(feat_s0.unsqueeze(1), N, dim=1).flatten(0, 1) # (B*N)xCxHxW
+            feat_s1 = torch.repeat_interleave(feat_s1.unsqueeze(1), N, dim=1).flatten(0, 1)
+            upscaled_embedding = act1(ln1(dc1(tgt) + feat_s1))
             upscaled_embedding = act2(dc2(upscaled_embedding) + feat_s0)
 
-        hyper_in_list: List[torch.Tensor] = []
-        for i in range(self.num_mask_tokens):
-            hyper_in_list.append(
-                self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :])
-            )
-        hyper_in = torch.stack(hyper_in_list, dim=1)
+        hyper_in = self.output_hypernetworks_mlp(mask_token_out).unsqueeze(1) # (BN)x1x32
         b, c, h, w = upscaled_embedding.shape
-        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w)
+        # (BN)x1x32 @ (BN)x32x(HW) -> (BN)x1x(HW) -> BxNxHxW
+        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(B, N, h, w)
 
         # Generate mask quality predictions
-        iou_pred = self.iou_prediction_head(iou_token_out)
-        # Obj scores logits - default to 10.0, i.e. assuming the object is present, sigmoid(10)=1
-        object_score_logits = 10.0 * iou_pred.new_ones(iou_pred.shape[0], 1)
+        iou_pred = self.iou_prediction_head(iou_token_out).view(B, N) # BxN
+        if self.pred_obj_scores:
+            assert s == 1
+            object_score_logits = self.pred_obj_score_head(hs[:, s, :]).view(B, N) # BxN
+        else:
+            # Obj scores logits - default to 10.0, i.e. assuming the object is present, sigmoid(10)=1
+            object_score_logits = 10.0 * iou_pred.new_ones(*iou_pred.shape)
 
-        return masks, iou_pred, mask_tokens_out, object_score_logits
+        return masks, iou_pred, mask_token_out, object_score_logits
 
 

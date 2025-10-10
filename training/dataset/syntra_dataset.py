@@ -101,7 +101,7 @@ class SynTraDataset(VisionDataset):
             segments, cls_id_to_colors = segment_loader.load(frame.frame_id)
             
             for cls_id, cls_color in cls_id_to_colors.items():
-                # update visible colors
+                # update visible colors in all frames
                 if cls_color not in sampled_colors:
                     sampled_colors.append(cls_color)
                 # Extract the segment
@@ -116,8 +116,9 @@ class SynTraDataset(VisionDataset):
                         segment=segment,
                     )
                 )
-            
-                sampled_notion_ids.append(mapped_cls_id)
+                if frame_idx > 0:
+                    # only sample notions from source frames
+                    sampled_notion_ids.append(mapped_cls_id)
         
         sampled_notion_ids = list(set(sampled_notion_ids))
         if len(sampled_notion_ids) > self.notion_size:
@@ -126,11 +127,13 @@ class SynTraDataset(VisionDataset):
             # Filter out notions in each frame that are not in the sampled_notion_ids
             for frame in images:
                 frame.notions = [n for n in frame.notions if n.cls_id in sampled_notion_ids]
+        # shuffle the notion ids
+        random.shuffle(sampled_notion_ids)
 
         return SrcTgtDatapoint(
             frames=images,
             target_id=target.target_id,
-            valid_src_notion_ids=sorted(sampled_notion_ids),
+            valid_src_notion_ids=sampled_notion_ids,
             notion_size=self.notion_size,
             size=(h, w),
         )

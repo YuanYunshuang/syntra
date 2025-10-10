@@ -90,6 +90,29 @@ def sigmoid_focal_loss(
     return loss.mean(1).sum() / num_objects
 
 
+def ce_loss(inputs, targets, num_objects, loss_on_multimask=False):
+    """
+    Args:
+        inputs: A float tensor of arbitrary shape.
+                The predictions for each example.
+        targets: A float tensor with the same shape as inputs. Stores the binary
+                 classification label for each element in inputs
+                (0 for the negative class and 1 for the positive class).
+        num_objects: Number of objects in the batch
+        loss_on_multimask: True if multimask prediction is enabled
+    Returns:
+        Cross entropy loss tensor
+    """
+    if loss_on_multimask:
+        assert inputs.dim() == 4 and targets.dim() == 4
+        loss = F.binary_cross_entropy_with_logits(
+            inputs, targets, reduction="none"
+        ).flatten(2)
+        return loss.mean(-1) / num_objects  # average over spatial dims
+    loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+    return loss.mean(1).sum() / num_objects
+
+
 def iou_loss(
     inputs, targets, pred_ious, num_objects, loss_on_multimask=False, use_l1_loss=False
 ):
@@ -134,6 +157,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         pred_obj_scores=False,
         focal_gamma_obj_score=0.0,
         focal_alpha_obj_score=-1,
+        ce_loss_for_mask=False,
     ):
         """
         This class computes the multi-step multi-mask and IoU losses.
@@ -163,21 +187,21 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self.supervise_all_iou = supervise_all_iou
         self.iou_use_l1_loss = iou_use_l1_loss
         self.pred_obj_scores = pred_obj_scores
+        self.ce_loss_for_mask = ce_loss_for_mask
 
     def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
-        assert len(outs_batch) == len(targets_batch)
+        assert len(outs_batch['pred_masks']) == len(targets_batch)
         num_objects = torch.tensor(
-            (targets_batch.shape[1]), device=targets_batch.device, dtype=torch.float
-        )  # Number of objects is fixed within a batch
+            (1), device=targets_batch.device, dtype=torch.float
+        )  # Number of objects is 1 for each notion-generated mask
         if is_dist_avail_and_initialized():
             torch.distributed.all_reduce(num_objects)
         num_objects = torch.clamp(num_objects / get_world_size(), min=1).item()
 
         losses = defaultdict(int)
-        for outs, targets in zip(outs_batch, targets_batch):
-            cur_losses = self._forward(outs, targets, num_objects)
-            for k, v in cur_losses.items():
-                losses[k] += v
+        cur_losses = self._forward(outs_batch, targets_batch, num_objects)
+        for k, v in cur_losses.items():
+            losses[k] += v
 
         return losses
 
@@ -195,30 +219,23 @@ class MultiStepMultiMasksAndIous(nn.Module):
         If `supervise_all_iou` is True, we backpropagate ious losses for all predicted masks.
         """
 
-        target_masks = targets.unsqueeze(1).float()
-        assert target_masks.dim() == 4  # [N, 1, H, W]
-        src_masks_list = outputs["multistep_pred_multimasks_high_res"]
-        ious_list = outputs["multistep_pred_ious"]
-        object_score_logits_list = outputs["multistep_object_score_logits"]
-
-        assert len(src_masks_list) == len(ious_list)
-        assert len(object_score_logits_list) == len(ious_list)
+        target_masks = targets.float()
+        assert target_masks.dim() == 4  # [B, N, H, W]
+        pred_masks = outputs["pred_masks_high_res"]
+        pred_ious = outputs["pred_ious"]
+        object_score_logits = outputs["object_score_logits"]
 
         # accumulate the loss over prediction steps
         losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
-        for src_masks, ious, object_score_logits in zip(
-            src_masks_list, ious_list, object_score_logits_list
-        ):
-            self._update_losses(
-                losses, src_masks, target_masks, ious, num_objects, object_score_logits
-            )
+        self._update_losses(
+            losses, pred_masks, target_masks, pred_ious, num_objects, object_score_logits
+        )
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
 
     def _update_losses(
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
-    ):
-        target_masks = target_masks.expand_as(src_masks)
+    ):  
         # get focal, dice and iou loss on all output masks in a prediction step
         loss_multimask = sigmoid_focal_loss(
             src_masks,
@@ -242,22 +259,28 @@ class MultiStepMultiMasksAndIous(nn.Module):
                 device=loss_multimask.device,
             )
         else:
-            target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[
-                ..., None
-            ].float()
-            loss_class = sigmoid_focal_loss(
-                object_score_logits,
-                target_obj,
-                num_objects,
-                alpha=self.focal_alpha_obj_score,
-                gamma=self.focal_gamma_obj_score,
-            )
+            target_obj = torch.any((target_masks > 0).flatten(2), dim=-1).float()
+            if self.ce_loss_for_mask:
+                loss_class = ce_loss(
+                    object_score_logits,
+                    target_obj,
+                    num_objects,
+                    loss_on_multimask=False,
+                )
+            else:
+                loss_class = sigmoid_focal_loss(
+                    object_score_logits,
+                    target_obj,
+                    num_objects,
+                    alpha=self.focal_alpha_obj_score,
+                    gamma=self.focal_gamma_obj_score,
+                )
 
         loss_multiiou = iou_loss(
             src_masks,
             target_masks,
             ious,
-            num_objects,
+            num_objects, # each mask has only one object
             loss_on_multimask=True,
             use_l1_loss=self.iou_use_l1_loss,
         )

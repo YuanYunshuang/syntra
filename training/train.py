@@ -82,7 +82,7 @@ def main(args) -> None:
 
 
 if __name__=="__main__":
-    initialize_config_module(config_module="syntra")
+    initialize_config_module(config_module="syntra", version_base="1.2")
     parser = ArgumentParser()
     parser.add_argument("-c", "--config", type=str, required=True, 
                         help="config file path")

@@ -5,10 +5,13 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
+import random
 
 import numpy as np
 import torch
 import torch.distributed
+
+from syntra.modeling.backbones.dora import DoRAWrapper
 from syntra.modeling.syntra_base import SynTraBase
 from syntra.modeling.syntra_utils import (
     get_1d_sine_pe,
@@ -28,72 +31,137 @@ class SynTraTrain(SynTraBase):
         image_encoder,
         notion_attention=None,
         freeze_image_encoder=False,
+        dora_rank: int=0, # 0 for not using dora
         **kwargs,
     ):
         super().__init__(image_encoder, notion_attention, **kwargs)
         # A random number generator with a fixed initial seed across GPUs
         self.rng = np.random.default_rng(seed=42)
+        self.dora_rank = dora_rank
 
         if freeze_image_encoder:
             for p in self.image_encoder.parameters():
                 p.requires_grad = False
+        
+        self.visual_dict = {}
+        
+    def dora_adapt(self):
+        r = self.dora_rank
+        if r > 0:
+            self.image_encoder.trunk.blocks = DoRAWrapper(self.image_encoder.trunk, r)
+            
+            num_trainable_params = sum(
+                p.numel() for p in self.image_encoder.parameters() if p.requires_grad
+            )
+            total_params = sum(p.numel() for p in self.image_encoder.parameters())
+            assert num_trainable_params < total_params, "No parameters are frozen!"
+            
+            logging.info(f"DoRA applied with rank {r} for image encoder: \n" +
+                         f"Trainable: {num_trainable_params}," +
+                         f"Total: {total_params}, " + 
+                         f"Ratio: {num_trainable_params / total_params * 100: .02f}%.")
 
     def forward(self, input: BatchedSrcTgtDatapoint):
         if self.training:
             # precompute image features on all frames before tracking
-            backbone_out = self.forward_image(input.flat_img_batch)
+            backbone_out = self.forward_image(input.img_batch)
         else:
             # defer image feature computation on a frame until it's being tracked
             backbone_out = {"backbone_fpn": None, "vision_pos_enc": None}
-        backbone_out = self.prepare_prompt_inputs(backbone_out, input)
-        previous_stages_out = self.forward_segmentaion(backbone_out, input)
-
-        return previous_stages_out
-
-    def _prepare_backbone_features_per_frame(self, img_batch, img_ids):
-        """Compute the image backbone features on the fly for the given img_ids."""
-        # Only forward backbone on unique image ids to avoid repetitive computation
-        # (if `img_ids` has only one element, it's already unique so we skip this step).
-        if img_ids.numel() > 1:
-            unique_img_ids, inv_ids = torch.unique(img_ids, return_inverse=True)
-        else:
-            unique_img_ids, inv_ids = img_ids, None
-
-        # Compute the image features on those unique image ids
-        image = img_batch[unique_img_ids]
-        backbone_out = self.forward_image(image)
-        (
-            _,
-            vision_feats,
-            vision_pos_embeds,
-            feat_sizes,
-        ) = self._prepare_backbone_features(backbone_out)
-        # Inverse-map image features for `unique_img_ids` to the final image features
-        # for the original input `img_ids`.
-        if inv_ids is not None:
-            image = image[inv_ids]
-            vision_feats = [x[:, inv_ids] for x in vision_feats]
-            vision_pos_embeds = [x[:, inv_ids] for x in vision_pos_embeds]
-
-        return image, vision_feats, vision_pos_embeds, feat_sizes
-
-    def prepare_prompt_inputs(self, backbone_out, input, start_frame_idx=0):
-        B, T, _, H, W = input.img_batch.shape
-        h, w = backbone_out['vision_features'].shape[-2:]
-        img_features = backbone_out['vision_features'].reshape(B, T, -1, h, w)
-        src_pos_embeds = backbone_out['vision_pos_enc'][-1].reshape(B, T, -1, h, w)
-        src_img_features = img_features[:, 1:]
-        src_pos_embeds = src_pos_embeds[:, 1:]
-
-        notions = self.prompt_encoder(
-            src_img_features, src_pos_embeds, input.src_mask_batch.float()
+        
+        # forward heads
+        src_features, src_pos_embeds = self._prepare_prompt_input(
+            backbone_out
+        )
+        tgt_features, tgt_pos_embeds, high_res_features = self._prepare_decoder_input(
+            backbone_out
         )
 
-        return notions
+        output_dict = self._forward_heads(
+            tgt_features, tgt_pos_embeds, 
+            src_features, src_pos_embeds, 
+            input.src_mask_batch.float(),
+            high_res_features
+        )
 
-    def forward_segmentaion(
-        self, backbone_out, input: BatchedSrcTgtDatapoint, return_dict=False
-    ):
-        out_put = self._forward_heads(backbone_out, input)
-        return None
+        self.visual_dict = {
+            "img": input.img_batch,
+            "pred_masks": output_dict["pred_masks"],
+            "pred_ious": output_dict["pred_ious"],
+            "src_mask": input.src_mask_batch,
+            "tgt_mask": input.tgt_mask_batch,
+        }
+
+        return output_dict
+
+    def _prepare_prompt_input(self, backbone_out):
+        img_features = backbone_out['vision_features']
+        src_pos_embeds = backbone_out['vision_pos_enc'][-1]
+        src_features = img_features[:, 1:]
+        src_pos_embeds = src_pos_embeds[:, 1:]
+        return src_features, src_pos_embeds
+    
+    def _prepare_decoder_input(self, backbone_out):
+        backbone_out = backbone_out.copy()
+        assert len(backbone_out["backbone_fpn"]) == len(backbone_out["vision_pos_enc"])
+        assert len(backbone_out["backbone_fpn"]) >= self.num_feature_levels
+
+        fpn_feature_maps = backbone_out["backbone_fpn"][-self.num_feature_levels :]
+        vision_pos_embeds = backbone_out["vision_pos_enc"][-self.num_feature_levels :]
+
+        # feat_sizes = [(x.shape[-2], x.shape[-1]) for x in vision_pos_embeds]
+
+        # take the last level as the target feature
+        # NxCxHxW => BxTxCxHxW => BxCxHxW
+        tgt_vision_feats = backbone_out['vision_features'][:, 0]
+        tgt_pos_embeds = vision_pos_embeds[-1][:, 0]
+
+        # High-resolution feature maps for the SAM head, NxCxHxW => BxTxCxHxW => BxCxHxW
+        if len(fpn_feature_maps) > 1:
+            high_res_features = fpn_feature_maps[:-1]
+        else:
+            high_res_features = None
+
+        return tgt_vision_feats, tgt_pos_embeds, high_res_features
+    
+    def log_visuals(self, logger, global_step, phase):
+        if not self.visual_dict:
+            return
+        # we only visualize one random batch
+        batch_idx = random.randint(0, len(self.visual_dict["img"]) - 1)
+        imgs = self.visual_dict["img"][batch_idx] # (T, 3, H, W)
+        gt_masks = self.visual_dict["tgt_mask"][batch_idx] # (N, H, W)
+        pred_masks = self.visual_dict["pred_masks"][batch_idx] # (N, H, W)
+        # pred_ious = self.visual_dict["pred_ious"][0] # (T)
+        src_mask = self.visual_dict["src_mask"][batch_idx] # (T-1, N, H, W)
+        masks = torch.cat([gt_masks.unsqueeze(0), src_mask], dim=0) # (T, N, H, W)
+
+        # unnormalize the image
+        mean = torch.tensor([0.485, 0.456, 0.406], device=imgs.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=imgs.device).view(1, 3, 1, 1)
+        imgs = imgs * std + mean
+
+        # normalize the predicted masks to [0, 1] and upscale to the half input image size
+        pred_masks = pred_masks.sigmoid()
+        # pred_masks = (pred_masks - pred_masks.min()) / (pred_masks.max() - pred_masks.min() + 1e-6)
+        pred_masks = torch.nn.functional.interpolate(
+            pred_masks.unsqueeze(0), scale_factor=4, mode="bilinear", align_corners=False
+        ).squeeze(0)
+
+        logger.log_images(
+            f"visual/input", imgs[:, :, ::2, ::2], global_step, dataformats="NCHW"
+        )
+        for i in range(self.num_notions):
+            logger.log_images(
+                f"visual/gt/notion_{i}", masks[:, i:i+1][:, :, ::2, ::2], global_step, dataformats="NCHW"
+            )
+            logger.log_images(
+                f"visual/pred/notion_{i}", pred_masks[i:i+1, ::2, ::2], global_step, dataformats="CHW"
+            )
+
+        # all target images in a batch
+        logger.log_images(
+            f"visual/all_targets", self.visual_dict["img"][:, 0, :, ::2, ::2], global_step, dataformats="NCHW"
+        )
+
 
