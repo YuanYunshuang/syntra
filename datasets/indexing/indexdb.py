@@ -110,7 +110,6 @@ class IndexDatabase:
             assert os.path.exists(db_path), f"db_path {db_path} does not exist, please provide a valid path or a map_dataloader to generate the index."
             self.load_index(db_path)
         else:
-            assert map_dataloader is not None, "If db_path does not exist, map_dataloader must be provided."
             self.generate_index(map_dataloader)
     
     @property

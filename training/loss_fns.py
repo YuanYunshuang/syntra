@@ -157,7 +157,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         pred_obj_scores=False,
         focal_gamma_obj_score=0.0,
         focal_alpha_obj_score=-1,
-        ce_loss_for_mask=False,
+        ce_loss=False,
     ):
         """
         This class computes the multi-step multi-mask and IoU losses.
@@ -187,7 +187,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self.supervise_all_iou = supervise_all_iou
         self.iou_use_l1_loss = iou_use_l1_loss
         self.pred_obj_scores = pred_obj_scores
-        self.ce_loss_for_mask = ce_loss_for_mask
+        self.ce_loss = ce_loss
 
     def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
         assert len(outs_batch['pred_masks']) == len(targets_batch)
@@ -236,15 +236,33 @@ class MultiStepMultiMasksAndIous(nn.Module):
     def _update_losses(
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
     ):  
+        # save src and target masks for visualization
+        import os
+        from torchvision.utils import make_grid
+        from torchvision.transforms import ToPILImage
+        imgs = torch.cat([src_masks.sigmoid(), target_masks], dim=0)
+        grid = make_grid(imgs.repeat(1, 3, 1, 1), nrow=8, padding=5, pad_value=0.5)
+        grid_img = ToPILImage()(grid.cpu())
+        grid_img.save(f'{os.environ["HOME"]}/Downloads/mask_grid.png')
+
         # get focal, dice and iou loss on all output masks in a prediction step
-        loss_multimask = sigmoid_focal_loss(
-            src_masks,
-            target_masks,
-            num_objects,
-            alpha=self.focal_alpha,
-            gamma=self.focal_gamma,
-            loss_on_multimask=True,
-        )
+        if self.ce_loss:
+            loss_multimask = ce_loss(
+                src_masks,
+                target_masks,
+                num_objects,
+                loss_on_multimask=True,
+            )
+        else:
+            loss_multimask = sigmoid_focal_loss(
+                src_masks,
+                target_masks,
+                num_objects,
+                alpha=self.focal_alpha,
+                gamma=self.focal_gamma,
+                loss_on_multimask=True,
+            )
+        
         loss_multidice = dice_loss(
             src_masks, target_masks, num_objects, loss_on_multimask=True
         )
@@ -258,9 +276,10 @@ class MultiStepMultiMasksAndIous(nn.Module):
                 dtype=loss_multimask.dtype,
                 device=loss_multimask.device,
             )
+            
         else:
             target_obj = torch.any((target_masks > 0).flatten(2), dim=-1).float()
-            if self.ce_loss_for_mask:
+            if self.ce_loss:
                 loss_class = ce_loss(
                     object_score_logits,
                     target_obj,

@@ -54,7 +54,7 @@ class PromptEncoder(nn.Module):
             in_dim = 1 if i == 0 else 2**(i+1)
             out_dim = 2**(i+2)
             mask_downscaling.extend([
-                nn.Conv2d(in_dim, out_dim, kernel_size=2, stride=2, bias=False),
+                nn.Conv2d(in_dim, out_dim, kernel_size=2, stride=2),
                 LayerNorm2d(out_dim),
                 activation(),
             ])
@@ -125,7 +125,8 @@ class PromptEncoder(nn.Module):
         prompt_embeddings = src_emb.unsqueeze(2) * mask_embeddings
         prompt_embeddings = self.merge_image_mask_pair(prompt_embeddings.flatten(0, 2)) # (B*T*N)xCxHxW
         prompt_embeddings = prompt_embeddings.view(B, T, N, self.embed_dim, H, W) # BxTxNxCxHxW
-        dense_embeddings = prompt_embeddings.max(dim=1).values # BxNxCxHxW
+        # dense_embeddings = prompt_embeddings.max(dim=1).values # BxNxCxHxW
+        dense_embeddings = None
 
         prompt_embeddings = prompt_embeddings.permute(0, 2, 1, 4, 5, 3) # BxNxTxHxWxC
         prompt_embeddings = prompt_embeddings.flatten(0, 1).flatten(1, 3) # (B*N)x(L)xC, L=T*H*W

@@ -106,6 +106,9 @@ class SynTraDataset(VisionDataset):
                     sampled_colors.append(cls_color)
                 # Extract the segment
                 segment = segments[cls_id].to(torch.uint8)
+                # ignore the src segment if the current foregaround area is too small
+                if frame_idx > 0 and segment.sum() < 0.005 * (h * w):
+                    continue
                 # segment = torch.zeros(h, w, dtype=torch.uint8)
 
                 mapped_cls_id = sampled_colors.index(cls_color)

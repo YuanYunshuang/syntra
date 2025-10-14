@@ -48,19 +48,25 @@ def generate_src_tgt_intra_cls(data_root, nshot, k=8):
             json.dump(pairing_info, f, indent=4)
 
 
-def generate_src_tgt_inter_cls(data_root, nshot, k=8, visualize=False):
+def generate_src_tgt_inter_cls(data_root, mode, k=8, visualize=False):
     img_encoder = DinoV2Encoder()
     for dataset in os.listdir(data_root):
-        with open(os.path.join(data_root, dataset, f'selected_{nshot}.json'), 'r') as f:
-            data_info = json.load(f)
+        if "nshot" in mode:
+            nshot = int(mode[5:])
+            with open(os.path.join(data_root, dataset, f'selected_{nshot}.json'), 'r') as f:
+                data_info = json.load(f)
+                all_samples = []
+            for cls_samples in data_info.values():
+                all_samples += cls_samples
+            all_samples_no_repeat = list(set(all_samples))
+        else:
+            with open(os.path.join(data_root, dataset, f'{mode}_samples.txt'), 'r') as f:
+                all_samples = f.read().splitlines()
+            all_samples_no_repeat = all_samples
         
         pairing_info = {}
     
         # build index db for all samples
-        all_samples = []
-        for cls_samples in data_info.values():
-            all_samples += cls_samples
-        all_samples_no_repeat = list(set(all_samples))
         map_dataloader = BaseDataloaders(data_root, all_samples_no_repeat, batch_size=4)
         index_db = IndexDatabase(map_dataloader=map_dataloader, img_encoder=img_encoder, merge_patch_token=False)
 
@@ -73,7 +79,7 @@ def generate_src_tgt_inter_cls(data_root, nshot, k=8, visualize=False):
             distances = distances[mask]
             indices = indices[mask]
             if len(indices) < k - 1:
-                print(f"Warning: sample {sample} has less than {k} neighbors. Final selected neighbors: {len(indices)}")
+                print(f"Warning: sample {sample} has less than {k-1} neighbors. Final selected neighbors: {len(indices)}")
             # update pairing info
             pairing_info[sample] = {
                 'src_samples': [all_samples_no_repeat[i] for i in indices],
@@ -83,7 +89,7 @@ def generate_src_tgt_inter_cls(data_root, nshot, k=8, visualize=False):
         del map_dataloader
 
         # save pairing info
-        save_path = os.path.join(data_root, dataset, f'paring_{nshot}_intercls.json')
+        save_path = os.path.join(data_root, dataset, f'paring_{mode}_intercls.json')
         with open(save_path, 'w') as f:
             json.dump(pairing_info, f, indent=4)
         
@@ -126,5 +132,4 @@ def visualize_generateion(dataset, pairing_info, mode='inter', n_vis = 5):
 
 if __name__=="__main__":
     data_root = "/home/yuan/data/HisMap/syntra384"
-    nshot = 50
-    generate_src_tgt_inter_cls(data_root, nshot, k=8, visualize=True)
+    generate_src_tgt_inter_cls(data_root, "nshot100", k=8, visualize=False)

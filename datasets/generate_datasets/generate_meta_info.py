@@ -138,6 +138,8 @@ def select_roi_samples(dinfo_file, num_samples_per_cls_per_sheet=1, min_ratio=0.
             if 'siegfried' in sheet:
                 samples_in_sheet = dinfo
                 replace = False
+                if 'railway' in sheet:
+                    min_ratio = 0.02
             else:
                 samples_in_sheet = {name: info for name, info in dinfo.items() if name.split('.')[-1].rsplit('_', 2)[0] == sheet}
                 replace = True
@@ -149,6 +151,7 @@ def select_roi_samples(dinfo_file, num_samples_per_cls_per_sheet=1, min_ratio=0.
                 print(f"No samples found for class {cls} within the specified ratio range.")
                 continue
             if len(cls_samples_in_ratio_range) < num_samples_per_cls_per_sheet:
+                replace = True
                 print(f"Only {len(cls_samples_in_ratio_range)} samples found for class {cls}," + \
                       f"less than the requested {num_samples_per_cls_per_sheet}. Selecting all available samples with replacement.")
             selected_samples[cls].extend(
@@ -231,6 +234,6 @@ def select_fewshot_samples(data_root, dataset_list=None, nshot=10):
 if __name__ == "__main__":
     data_root = "/home/yuan/data/HisMap/syntra384"
     dataset_list = None # ['donauwoerth.a', 'donauwoerth.b']
-    generate_data_info(data_root, dataset_list=dataset_list)
-    train_test_val_split(data_root, dataset_list=dataset_list)
+    # generate_data_info(data_root, dataset_list=dataset_list)
+    # train_test_val_split(data_root, dataset_list=dataset_list)
     select_fewshot_samples(data_root, nshot=100, dataset_list=dataset_list)

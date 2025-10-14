@@ -16,7 +16,11 @@ from torch.utils.data.distributed import DistributedSampler
 
 
 class MixedDataLoader:
-    def __init__(self, dataloaders: List[DataLoader], mixing_prob: torch.FloatTensor, auto_parse_datasets: bool = True) -> None:
+    def __init__(self, 
+                 dataloaders: List[DataLoader], 
+                 mixing_prob: torch.FloatTensor, 
+                 auto_parse_datasets: bool = True,
+                 **kwargs) -> None:
         """
         Args:
             dataloaders (List[DataLoader]): List of DataLoaders to be mixed.
@@ -84,6 +88,7 @@ class TorchTrainMixedDataset:
         phases_per_epoch: int = 1,
         dataset_prob: Optional[List[float]] = None,
         auto_parse_datasets: bool = True,
+        **kwargs,
     ) -> None:
         """
         Args:
@@ -109,6 +114,7 @@ class TorchTrainMixedDataset:
         self.collate_fn = collate_fn
         self.worker_init_fn = worker_init_fn
         self.auto_parse_datasets = auto_parse_datasets
+        self.kwargs = kwargs
         assert len(self.datasets) > 0
         for dataset in self.datasets:
             assert not isinstance(dataset, IterableDataset), "Not supported"
@@ -188,4 +194,4 @@ class TorchTrainMixedDataset:
                     worker_init_fn=self.worker_init_fn,
                 )
             )
-        return MixedDataLoader(dataloaders, self.dataset_prob, self.auto_parse_datasets)
+        return MixedDataLoader(dataloaders, self.dataset_prob, self.auto_parse_datasets, **self.kwargs)

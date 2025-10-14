@@ -141,12 +141,12 @@ class SynTraTrain(SynTraBase):
         std = torch.tensor([0.229, 0.224, 0.225], device=imgs.device).view(1, 3, 1, 1)
         imgs = imgs * std + mean
 
-        # normalize the predicted masks to [0, 1] and upscale to the half input image size
-        pred_masks = pred_masks.sigmoid()
         # pred_masks = (pred_masks - pred_masks.min()) / (pred_masks.max() - pred_masks.min() + 1e-6)
         pred_masks = torch.nn.functional.interpolate(
             pred_masks.unsqueeze(0), scale_factor=4, mode="bilinear", align_corners=False
         ).squeeze(0)
+        # normalize the predicted masks to [0, 1] and upscale to the half input image size
+        pred_masks = pred_masks.sigmoid()
 
         logger.log_images(
             f"visual/input", imgs[:, :, ::2, ::2], global_step, dataformats="NCHW"

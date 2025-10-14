@@ -157,7 +157,7 @@ class MaskDecoder(nn.Module):
                 [
                     self.iou_token.weight, # 1x256
                     self.mask_tokens.weight, # 1x256
-                ], dim=1
+                ], dim=0
             ) # 2x256
 
         output_tokens = output_tokens.unsqueeze(0).expand(B*N, -1, -1) # (B*N)x2x256 or (B*N)x3x256
@@ -180,6 +180,8 @@ class MaskDecoder(nn.Module):
 
         # Upscale mask embeddings and predict masks using the mask tokens
         tgt = tgt.transpose(1, 2).view(b, c, h, w) # (BN)x(HW)xC -> (BN)xCxHxW
+
+        # upscaled_embedding = self.output_upscaling(tgt) # (BN)xC'xH'xW'
         if not self.use_high_res_features:
             upscaled_embedding = self.output_upscaling(tgt)
         else:

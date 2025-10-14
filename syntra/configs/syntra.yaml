@@ -4,20 +4,20 @@ scratch:
   resolution: 384
   train_batch_size: 8
   num_train_workers: 4
-  num_src: 1
+  num_src: 3
   num_notions: 1
   num_tokens_per_notion: 4
   max_num_cls: 4
-  base_lr: 1.0e-4
-  vision_lr: 5.0e-05
+  base_lr: 1.0e-5
+  vision_lr: 1.0e-5
   phases_per_epoch: 1
   num_iterations: 40000
-  num_epochs: 5000
+  num_epochs: 400
 
 dataset:
   name: SynTra
   root: /home/yuan/data/HisMap/syntra384
-  split: paring_50_intercls.json
+  split: paring_nshot100_intercls.json
   multiplier: 1
 
 syntra:
@@ -28,7 +28,7 @@ syntra:
           consistent_transform: True
         - _target_: training.dataset.transforms.RandomAffine
           degrees: 25
-          shear: 20
+          shear: 5
           image_interpolation: bilinear
           consistent_transform: True
         - _target_: training.dataset.transforms.RandomResizeAPI
@@ -45,6 +45,8 @@ trainer:
   mode: train_only
   max_epochs: ${times:${scratch.num_epochs},${scratch.phases_per_epoch}}
   seed_value: 123
+  # number of batches to accumulate gradients
+  accumulate_grad_batches: 4
 
   model:
     _target_: training.model.syntra.SynTraTrain
@@ -71,7 +73,7 @@ trainer:
     notion_attention:
       _target_: syntra.modeling.notion_attention.NotionAttention
       d_model: 256
-      dim_feedforward: 1024
+      dim_feedforward: 2038
       num_sa_layers: 4
       num_ca_layers: 4
       pos_enc_at_attn: false
@@ -99,7 +101,7 @@ trainer:
     # input image resolution
     image_size: ${scratch.resolution}
     # dora rank for image encoder, dora_rank=0 means no dora
-    dora_rank: 4
+    dora_rank: 8
     # number of notions == number of masks predicted for each target image
     num_notions: ${scratch.num_notions}
     # whether to use high-resolution feature maps in the SAM mask decoder
@@ -111,6 +113,7 @@ trainer:
     # Whether to use an MLP to predict object scores
     pred_obj_scores_mlp: true
 
+
   data:
     train:
       _target_: training.dataset.syntra_datasets.TorchTrainMixedDataset
@@ -118,7 +121,8 @@ trainer:
       batch_sizes:
         - ${scratch.train_batch_size}
         - ${scratch.train_batch_size}
-      auto_parse_datasets: ['siegfried.vineyard', 'siegfried.railway'] # all or a list of dataset names 
+      auto_parse_datasets: ['donauwoerth.a', 'donauwoerth.b', 'hameln.a', 'hameln.b', 'siegfried.railway', 'siegfried.vineyard'] # all or a list of dataset names 
+      multipliers: [1., 1., 1., 1., 1., 1.] #[1., 2., 0.2, 0.2, 0.16,   1.7]
 
       datasets:
         - _target_: training.dataset.utils.RepeatFactorWrapper
@@ -155,20 +159,21 @@ trainer:
 
     optimizer:
       _target_: torch.optim.AdamW
+      weight_decay: 0.01
 
-    gradient_clip:
-      _target_: training.optimizer.GradientClipper
-      max_norm: 0.1
-      norm_type: 2
+    # gradient_clip:
+    #   _target_: training.optimizer.GradientClipper
+    #   max_norm: 0.1
+    #   norm_type: 2
 
-    param_group_modifiers:
-      - _target_: training.optimizer.layer_decay_param_modifier
-        _partial_: True
-        layer_decay_value: 0.9
-        apply_to: 'image_encoder.trunk'
-        overrides:
-          - pattern: '*pos_embed*'
-            value: 1.0
+    # param_group_modifiers:
+    #   - _target_: training.optimizer.layer_decay_param_modifier
+    #     _partial_: True
+    #     layer_decay_value: 0.9
+    #     apply_to: 'image_encoder.trunk'
+    #     overrides:
+    #       - pattern: '*pos_embed*'
+    #         value: 1.0
 
     options:
       lr:
@@ -183,22 +188,22 @@ trainer:
                 end_value: ${divide:${scratch.base_lr},100}
             lengths: [0.1, 0.9]  # 10% warmup, 90% cosine decay
             interval_scaling: ['rescaled', 'rescaled']
-        - scheduler:
-            _target_: fvcore.common.param_scheduler.CosineParamScheduler
-            start_value: ${scratch.vision_lr}
-            end_value: ${divide:${scratch.vision_lr},10}
-          param_names:
-            - 'image_encoder.*'
-      weight_decay:
-        - scheduler:
-            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
-            value: 0.1
-        - scheduler:
-            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
-            value: 0.0
-          param_names:
-            - '*bias*'
-          module_cls_names: ['torch.nn.LayerNorm']
+        # - scheduler:
+        #     _target_: fvcore.common.param_scheduler.CosineParamScheduler
+        #     start_value: ${scratch.vision_lr}
+        #     end_value: ${divide:${scratch.vision_lr},10}
+        #   param_names:
+        #     - 'image_encoder.*'
+      # weight_decay:
+      #   - scheduler:
+      #       _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+      #       value: 0.01
+      #   - scheduler:
+      #       _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+      #       value: 0.01
+      #     param_names:
+      #       - '*bias*'
+      #     module_cls_names: ['torch.nn.LayerNorm']
 
   loss:
     all:
@@ -207,13 +212,13 @@ trainer:
         loss_mask: 20
         loss_dice: 1
         loss_iou: 1
-        loss_class: 1
+        loss_class: 0.1
       supervise_all_iou: true
       iou_use_l1_loss: true
       pred_obj_scores: true
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1.0
-      ce_loss_for_mask: true
+      ce_loss: false
 
   logging:
     tensorboard_writer:

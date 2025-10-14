@@ -72,16 +72,17 @@ def generate_donauwoerth(data_root_in, data_root_out, sheet_list=None):
 
         for x in range(0, w, train_img_size):
             for y in range(0, h, train_img_size):
-                map_patch = map_rgb[y:y+train_img_size, x:x+train_img_size]
-                lbl_patch = lbl_color[y:y+train_img_size, x:x+train_img_size]
+                map_patch = map_rgb[x:x+train_img_size, y:y+train_img_size]
+                lbl_patch = lbl_color[x:x+train_img_size, y:y+train_img_size]
                 # if the patch is smaller than train_img_size, pad it with zeros
                 if map_patch.shape[0] < train_img_size or map_patch.shape[1] < train_img_size:
-                    map_patch_padded = np.zeros((train_img_size, train_img_size, 3), dtype=np.uint8)
-                    lbl_patch_padded = np.zeros((train_img_size, train_img_size, 3), dtype=np.uint8)
-                    map_patch_padded[:map_patch.shape[0], :map_patch.shape[1]] = map_patch
-                    lbl_patch_padded[:lbl_patch.shape[0], :lbl_patch.shape[1]] = lbl_patch
-                    map_patch = map_patch_padded
-                    lbl_patch = lbl_patch_padded
+                    continue
+                    # map_patch_padded = np.zeros((train_img_size, train_img_size, 3), dtype=np.uint8)
+                    # lbl_patch_padded = np.zeros((train_img_size, train_img_size, 3), dtype=np.uint8)
+                    # map_patch_padded[:map_patch.shape[0], :map_patch.shape[1]] = map_patch
+                    # lbl_patch_padded[:lbl_patch.shape[0], :lbl_patch.shape[1]] = lbl_patch
+                    # map_patch = map_patch_padded
+                    # lbl_patch = lbl_patch_padded
                 # save the patch
                 map_patch_pil = Image.fromarray(map_patch)
                 lbl_patch_pil = Image.fromarray(lbl_patch)

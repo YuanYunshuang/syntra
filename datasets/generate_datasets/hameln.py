@@ -206,7 +206,7 @@ def generate_hameln_rgb_lbl(output_root, seperate_19xx_20xx=True):
     
     tk_image_files = [x for x in os.listdir(os.path.join(data_root_hameln, 'tk_image')) \
                       if x.endswith(".tif") and 'area' not in x]
-    tk_image_files = sorted(tk_image_files)
+    tk_image_files = sorted(tk_image_files)[7:]
     non_tk19xx_area = np.logical_not(read_tiff(os.path.join(data_root_hameln, 'tk_image', 'tk19xx_area.tif')))
     non_tk20xx_area = np.logical_not(read_tiff(os.path.join(data_root_hameln, 'tk_image', 'tk20xx_area.tif')))
     tk_labels = ['wald', 'grünland', 'siedlung', 'fließgewässer', 'stillgewässer']
@@ -272,16 +272,17 @@ def generate_hameln_rgb_lbl(output_root, seperate_19xx_20xx=True):
                 if x + train_img_size <= tk_img.shape[0] and y + train_img_size <= tk_img.shape[1]:
                     imgc = tk_img[x:x+train_img_size, y:y+train_img_size]
                     lblc = all_labels_color[x:x+train_img_size, y:y+train_img_size]
-                else:
-                    imgc = np.zeros((train_img_size, train_img_size, 3), dtype=tk_img.dtype)
-                    lblc = np.zeros((train_img_size, train_img_size, 3), dtype=all_labels.dtype)
-                    imgc[:min(train_img_size, tk_img.shape[0] - x), :min(train_img_size, tk_img.shape[1] - y)] = \
-                        tk_img[x:min(x + train_img_size, tk_img.shape[0]), y:min(y + train_img_size, tk_img.shape[1])]
-                    lblc[:min(train_img_size, tk_img.shape[0] - x), :min(train_img_size, tk_img.shape[1] - y)] = \
-                        all_labels_color[x:min(x + train_img_size, tk_img.shape[0]), y:min(y + train_img_size, tk_img.shape[1])]
+                # else:
+                #     continue
+                    # imgc = np.zeros((train_img_size, train_img_size, 3), dtype=tk_img.dtype)
+                    # lblc = np.zeros((train_img_size, train_img_size, 3), dtype=all_labels.dtype)
+                    # imgc[:min(train_img_size, tk_img.shape[0] - x), :min(train_img_size, tk_img.shape[1] - y)] = \
+                    #     tk_img[x:min(x + train_img_size, tk_img.shape[0]), y:min(y + train_img_size, tk_img.shape[1])]
+                    # lblc[:min(train_img_size, tk_img.shape[0] - x), :min(train_img_size, tk_img.shape[1] - y)] = \
+                    #     all_labels_color[x:min(x + train_img_size, tk_img.shape[0]), y:min(y + train_img_size, tk_img.shape[1])]
 
-                Image.fromarray(imgc).save(os.path.join(img_dir, f"{filename}.png"))
-                Image.fromarray(lblc).save(os.path.join(lbl_dir, f"{filename}.png"))
+                    Image.fromarray(imgc).save(os.path.join(img_dir, f"{filename}.png"))
+                    Image.fromarray(lblc).save(os.path.join(lbl_dir, f"{filename}.png"))
 
 
 def generate_data_info(root_dir, dataset_name):

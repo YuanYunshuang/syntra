@@ -138,6 +138,7 @@ class SingleGPUTrainer:
         checkpoint: Dict[str, Any] = None,
         max_epochs: int,
         mode: str = "train_only",
+        accumulate_grad_batches: int = 1,
         seed_value: int = 123,
         val_epoch_freq: int = 1,
         cuda: Dict[str, bool] = None,
@@ -155,6 +156,7 @@ class SingleGPUTrainer:
         self.checkpoint_conf = CheckpointConf(**checkpoint).infer_missing()
         self.max_epochs = max_epochs
         self.mode = mode
+        self.accumulate_grad_batches = accumulate_grad_batches
         self.val_epoch_freq = val_epoch_freq
         self.optim_conf = OptimConf(**optim) if optim is not None else None
         self.meters_conf = meters
@@ -226,6 +228,7 @@ class SingleGPUTrainer:
 
         auto_parse = self.data_conf.get(Phase.TRAIN).get("auto_parse_datasets", None)
         if auto_parse is not None:
+            multipliers = self.data_conf.get(Phase.TRAIN).get("multipliers", [1.0] * len(auto_parse))
             data_cfg = self.data_conf.get(Phase.TRAIN).datasets
             root_folder = data_cfg[0].dataset.datasets[0].syntra_dataset.root_folder
             if auto_parse == 'all':
@@ -236,9 +239,10 @@ class SingleGPUTrainer:
                 raise ValueError(f"Unknown auto_parse_datasets value {auto_parse}, should be 'all' or a list of dataset names.")
             logging.info(f"Auto parsing datasets from {root_folder}, found {dataset_names}.")
             datasets_cfg = []
-            for dn in dataset_names:
+            for i, dn in enumerate(dataset_names):
                 cur_dataset_cfg = copy.deepcopy(data_cfg[0].dataset.datasets[0])
                 cur_dataset_cfg.syntra_dataset.root_folder = os.path.join(root_folder, dn)
+                cur_dataset_cfg.multiplier = multipliers[i] 
                 datasets_cfg.append(cur_dataset_cfg)
             data_cfg[0].dataset.datasets = datasets_cfg
 
@@ -485,7 +489,7 @@ class SingleGPUTrainer:
                 loss,
                 self.steps[phase],
             )
-
+        
         self.steps[phase] += 1
 
         ret_tuple = {loss_str: loss}, batch_size, step_losses
@@ -516,7 +520,8 @@ class SingleGPUTrainer:
         # it's important to set grads to None, especially with Adam since 0
         # grads will also update a model even if the step doesn't produce
         # gradients
-        self.optim.zero_grad(set_to_none=True)
+        if self.steps[phase] % self.accumulate_grad_batches == 0:
+            self.optim.zero_grad(set_to_none=True)
         with torch.cuda.amp.autocast(
             enabled=self.optim_conf.amp.enabled,
             dtype=get_amp_type(self.optim_conf.amp.amp_dtype),
@@ -635,8 +640,9 @@ class SingleGPUTrainer:
 
                 # Optimizer step: the scaler will make sure gradients are not
                 # applied if the gradients are infinite
-                self.scaler.step(self.optim.optimizer)
-                self.scaler.update()
+                if self.steps[phase] % self.accumulate_grad_batches == 0:
+                    self.scaler.step(self.optim.optimizer)
+                    self.scaler.update()
 
                 # measure elapsed time
                 batch_time_meter.update(time.time() - end)

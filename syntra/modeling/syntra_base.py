@@ -127,16 +127,16 @@ class SynTraBase(torch.nn.Module):
         low_res_masks, iou_pred, mask_tokens_out, object_score_logits = self.mask_decoder(
             tgt_features, tgt_pos, notions, dense_prompt_embeddings, high_res_features
         )
-        if self.pred_obj_scores:
-            is_obj_appearing = object_score_logits > 0 # BxN
+        # if self.pred_obj_scores:
+        #     is_obj_appearing = object_score_logits > 0 # BxN
 
-            # Mask used for spatial memories is always a *hard* choice between obj and no obj,
-            # consistent with the actual mask prediction
-            low_res_masks = torch.where(
-                is_obj_appearing[..., None, None],
-                low_res_masks,
-                NO_OBJ_SCORE,
-            ) # BxNxHxW
+        #     # Mask used for spatial memories is always a *hard* choice between obj and no obj,
+        #     # consistent with the actual mask prediction
+        #     low_res_masks = torch.where(
+        #         is_obj_appearing[..., None, None],
+        #         low_res_masks,
+        #         NO_OBJ_SCORE,
+        #     ) # BxNxHxW
         
         # convert masks from possibly bfloat16 (or float16) to float32
         # (older PyTorch versions before 2.1 don't support `interpolate` on bf16)
