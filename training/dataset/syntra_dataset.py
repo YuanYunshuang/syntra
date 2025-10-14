@@ -34,6 +34,7 @@ class SynTraDataset(VisionDataset):
         sampler: SynTraSampler,
         multiplier: int,
         notion_size: int = 3,
+        pos_sample_prob: float = 0.75,
         target_segments_available=True,
     ):
         self._transforms = transforms
@@ -41,6 +42,7 @@ class SynTraDataset(VisionDataset):
         self.sampler = sampler
         self.syntra_dataset = syntra_dataset
         self.notion_size = notion_size
+        self.pos_sample_prob = pos_sample_prob
 
         self.repeat_factors = torch.ones(len(self.syntra_dataset), dtype=torch.float32)
         self.repeat_factors *= multiplier
@@ -87,6 +89,7 @@ class SynTraDataset(VisionDataset):
         rgb_images = load_images(sampled_frames)
         sampled_colors = []
         sampled_notion_ids = []
+        target_notion_ids = []
 
         # Iterate over the sampled frames and store their rgb data and segment data 
         for frame_idx, frame in enumerate(sampled_frames):
@@ -122,11 +125,18 @@ class SynTraDataset(VisionDataset):
                 if frame_idx > 0:
                     # only sample notions from source frames
                     sampled_notion_ids.append(mapped_cls_id)
+                else:
+                    target_notion_ids.append(mapped_cls_id)
         
         sampled_notion_ids = list(set(sampled_notion_ids))
         if len(sampled_notion_ids) > self.notion_size:
-            # Randomly sample a subset of notion ids to fit into notion_size
-            sampled_notion_ids = random.sample(sampled_notion_ids, self.notion_size)
+            # positive ids are these that are both in the source and target image
+            # negative ids are these that are only in the source image
+            pos_ids = list(set(sampled_notion_ids) & set(target_notion_ids))
+            # assign a sampling weight to each id
+            sampled_notion_id_weights = [self.pos_sample_prob if x in pos_ids else (1 - self.pos_sample_prob) for x in sampled_notion_ids]
+            # Randomly sample a subset of notion ids to fit into notion_size according to the sampling weights
+            sampled_notion_ids = random.choices(sampled_notion_ids, weights=sampled_notion_id_weights, k=self.notion_size)
             # Filter out notions in each frame that are not in the sampled_notion_ids
             for frame in images:
                 frame.notions = [n for n in frame.notions if n.cls_id in sampled_notion_ids]
