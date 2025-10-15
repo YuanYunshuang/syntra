@@ -256,9 +256,9 @@ class RoPEAttention(Attention):
         *args,
         rope_theta=10000.0,
         # whether to repeat q rope to match k length
-        # this is needed for cross-attention to memories
+        # this is needed for cross-attention 
         rope_k_repeat=False,
-        feat_sizes=(64, 64),  # [w, h] for stride 16 feats at 1024 resolution
+        feat_sizes=(24, 24),  # [w, h] for stride 16 feats at 384 resolution
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -273,7 +273,7 @@ class RoPEAttention(Attention):
         self.rope_k_repeat = rope_k_repeat
 
     def forward(
-        self, q: Tensor, k: Tensor, v: Tensor, num_k_exclude_rope: int = 0
+        self, q: Tensor, k: Tensor, v: Tensor, num_k_exclude_rope: int = 0,
     ) -> Tensor:
         # Input projections
         q = self.q_proj(q)

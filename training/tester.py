@@ -127,7 +127,7 @@ class LoggingConf:
     log_batch_stats: bool = False
 
 
-class SingleGPUTrainer:
+class Tester:
     EPSILON = 1e-8
     def __init__(
         self,
@@ -136,15 +136,9 @@ class SingleGPUTrainer:
         model: Dict[str, Any] = None,
         logging: Dict[str, Any] = None,
         checkpoint: Dict[str, Any] = None,
-        max_epochs: int,
-        mode: str = "train_only",
-        accumulate_grad_batches: int = 1,
         seed_value: int = 123,
-        val_epoch_freq: int = 1,
         cuda: Dict[str, bool] = None,
         env_variables: Optional[Dict[str, Any]] = None,
-        optim: Optional[Dict[str, Any]] = None,
-        optim_overrides: Optional[List[Dict[str, Any]]] = None,
         meters: Optional[Dict[str, Any]] = None,
         loss: Optional[Dict[str, Any]] = None,
     ):
@@ -154,11 +148,6 @@ class SingleGPUTrainer:
         self.model_conf = model
         self.logging_conf = LoggingConf(**logging)
         self.checkpoint_conf = CheckpointConf(**checkpoint).infer_missing()
-        self.max_epochs = max_epochs
-        self.mode = mode
-        self.accumulate_grad_batches = accumulate_grad_batches
-        self.val_epoch_freq = val_epoch_freq
-        self.optim_conf = OptimConf(**optim) if optim is not None else None
         self.meters_conf = meters
         self.loss_conf = loss
 
@@ -170,7 +159,7 @@ class SingleGPUTrainer:
             log_level_primary=self.logging_conf.log_level_primary,
             log_level_secondary=self.logging_conf.log_level_secondary,
         )
-        set_seeds(seed_value, self.max_epochs, self.distributed_rank)
+        set_seeds(seed_value, 1, self.distributed_rank)
 
         self._setup_components()  # Except Optimizer everything is setup here.
         self._move_to_device()
@@ -179,16 +168,15 @@ class SingleGPUTrainer:
 
         self.time_elapsed_meter = DurationMeter("Time Elapsed", self.device, ":.2f")
 
-        if self.checkpoint_conf.resume_from is not None:
-            assert os.path.exists(
-                self.checkpoint_conf.resume_from
-            ), f"The 'resume_from' checkpoint {self.checkpoint_conf.resume_from} does not exist!"
-            dst = os.path.join(self.checkpoint_conf.save_dir, "checkpoint.pt")
-            if self.distributed_rank == 0 and not os.path.exists(dst):
-                # Copy the "resume_from" checkpoint to the checkpoint folder
-                # if there is not a checkpoint to resume from already there
-                makedir(self.checkpoint_conf.save_dir)
-                g_pathmgr.copy(self.checkpoint_conf.resume_from, dst)
+        assert os.path.exists(
+            self.checkpoint_conf.resume_from
+        ), f"The 'resume_from' checkpoint {self.checkpoint_conf.resume_from} does not exist!"
+        dst = os.path.join(self.checkpoint_conf.save_dir, "checkpoint.pt")
+        if self.distributed_rank == 0 and not os.path.exists(dst):
+            # Copy the "resume_from" checkpoint to the checkpoint folder
+            # if there is not a checkpoint to resume from already there
+            makedir(self.checkpoint_conf.save_dir)
+            g_pathmgr.copy(self.checkpoint_conf.resume_from, dst)
             
         self.load_checkpoint()
         
@@ -218,11 +206,15 @@ class SingleGPUTrainer:
             f"Done moving components to device {self.device} and local rank {self.local_rank}."
         )
 
-    def _auto_parse_dataset_cfg(self, phase):
-        auto_parse = self.data_conf.get(phase).get("auto_parse_datasets", None)
+    def _setup_components(self):
+        # Get the keys for all the val datasets, if any
+        test_phase = Phase.TEST
+        assert test_phase in self.data_conf, f"Test phase {test_phase} not found in data config."
+        test_keys = collect_dict_keys(self.data_conf[test_phase])
+
+        auto_parse = self.data_conf.get(test_phase).get("auto_parse_datasets", None)
         if auto_parse is not None:
-            multipliers = self.data_conf.get(phase).get("multipliers", [1.0] * len(auto_parse))
-            data_cfg = self.data_conf.get(phase).datasets
+            data_cfg = self.data_conf.get(test_phase).datasets
             root_folder = data_cfg[0].dataset.datasets[0].syntra_dataset.root_folder
             if auto_parse == 'all':
                 dataset_names = os.listdir(root_folder)
@@ -235,24 +227,15 @@ class SingleGPUTrainer:
             for i, dn in enumerate(dataset_names):
                 cur_dataset_cfg = copy.deepcopy(data_cfg[0].dataset.datasets[0])
                 cur_dataset_cfg.syntra_dataset.root_folder = os.path.join(root_folder, dn)
-                cur_dataset_cfg.multiplier = multipliers[i] 
+                cur_dataset_cfg.multiplier = 1.0
                 datasets_cfg.append(cur_dataset_cfg)
             data_cfg[0].dataset.datasets = datasets_cfg
-    
-    def _setup_components(self):
-        # Get the keys for all the val datasets, if any
-        if self.data_conf.get(Phase.VAL, None) is not None:
-            self._auto_parse_dataset_cfg(Phase.VAL)
 
-        self._auto_parse_dataset_cfg(Phase.TRAIN)
-
-        logging.info("Setting up components: Model, loss, optim, meters etc.")
-        self.epoch = 0
-        self.steps = {Phase.TRAIN: 0, Phase.VAL: 0}
+        logging.info("Setting up teset components: Model, meters etc.")
+        self.steps = {test_phase: 0}
 
         self.logger = Logger(self.logging_conf)
         self.model = instantiate(self.model_conf, _convert_="all")
-        print_model_summary(self.model)
 
         self.loss = None
         if self.loss_conf:
@@ -267,27 +250,7 @@ class SingleGPUTrainer:
         if self.meters_conf:
             self.meters = instantiate(self.meters_conf, _convert_="all")
 
-        self.scaler = torch.amp.GradScaler(
-            self.device,
-            enabled=self.optim_conf.amp.enabled if self.optim_conf else False,
-        )
-
-        self.gradient_clipper = (
-            instantiate(self.optim_conf.gradient_clip) if self.optim_conf else None
-        )
-        self.gradient_logger = (
-            instantiate(self.optim_conf.gradient_logger) if self.optim_conf else None
-        )
-
-        logging.info("Finished setting up components: Model, loss, optim, meters etc.")
-
-    def _construct_optimizers(self):
-        self.optim = construct_optimizer(
-            self.model,
-            self.optim_conf.optimizer,
-            self.optim_conf.options,
-            self.optim_conf.param_group_modifiers,
-        )
+        logging.info("Finished setting up test components: Model, meters etc.")
     
     def _setup_dataloaders(self):
         self.train_dataset = None
@@ -378,66 +341,6 @@ class SingleGPUTrainer:
         if self.mode in ["train", "train_only"]:
             self.train_dataset = instantiate(self.data_conf.train)
 
-    def save_checkpoint(self, epoch, checkpoint_names=None):
-        checkpoint_folder = self.checkpoint_conf.save_dir
-        makedir(checkpoint_folder)
-        if checkpoint_names is None:
-            checkpoint_names = ["checkpoint"]
-            if (
-                self.checkpoint_conf.save_freq > 0
-                and (int(epoch) % self.checkpoint_conf.save_freq == 0)
-            ) or int(epoch) in self.checkpoint_conf.save_list:
-                checkpoint_names.append(f"checkpoint_{int(epoch)}")
-
-        checkpoint_paths = []
-        for ckpt_name in checkpoint_names:
-            checkpoint_paths.append(os.path.join(checkpoint_folder, f"{ckpt_name}.pt"))
-
-        state_dict = self.model.state_dict()
-        state_dict = exclude_params_matching_unix_pattern(
-            patterns=self.checkpoint_conf.skip_saving_parameters, state_dict=state_dict
-        )
-        if hasattr(self.model, "dora_rank") and self.model.dora_rank > 0:
-            state_dict = exclude_frozen_params_byside_dora(state_dict)
-
-        checkpoint = {
-            "model": state_dict,
-            "optimizer": self.optim.optimizer.state_dict(),
-            "epoch": epoch,
-            "loss": self.loss.state_dict(),
-            "steps": self.steps,
-            "time_elapsed": self.time_elapsed_meter.val,
-            "best_meter_values": self.best_meter_values,
-        }
-        if self.optim_conf.amp.enabled:
-            checkpoint["scaler"] = self.scaler.state_dict()
-
-        # DDP checkpoints are only saved on rank 0 (all workers are identical)
-        if self.distributed_rank != 0:
-            return
-
-        for checkpoint_path in checkpoint_paths:
-            self._save_checkpoint(checkpoint, checkpoint_path)
-
-    def _save_checkpoint(self, checkpoint, checkpoint_path):
-        """
-        Save a checkpoint while guarding against the job being killed in the middle
-        of checkpoint saving (which corrupts the checkpoint file and ruins the
-        entire training since usually only the last checkpoint is kept per run).
-
-        We first save the new checkpoint to a temp file (with a '.tmp' suffix), and
-        and move it to overwrite the old checkpoint_path.
-        """
-        checkpoint_path_tmp = f"{checkpoint_path}.tmp"
-        with g_pathmgr.open(checkpoint_path_tmp, "wb") as f:
-            torch.save(checkpoint, f)
-        # after torch.save is completed, replace the old checkpoint with the new one
-        if g_pathmgr.exists(checkpoint_path):
-            # remove the old checkpoint_path file first (otherwise g_pathmgr.mv fails)
-            g_pathmgr.rm(checkpoint_path)
-        success = g_pathmgr.mv(checkpoint_path_tmp, checkpoint_path)
-        assert success
-
     def _get_meters(self, phase_filters=None):
         if self.meters is None:
             return {}
@@ -483,15 +386,6 @@ class SingleGPUTrainer:
                 loss, loss_log_str, self.steps[phase]
             )
 
-        if self.steps[phase] % self.logging_conf.log_scalar_frequency == 0:
-            self.logger.log(
-                loss_log_str,
-                loss,
-                self.steps[phase],
-            )
-        
-        self.steps[phase] += 1
-
         ret_tuple = {loss_str: loss}, batch_size, step_losses
 
         if phase in self.meters and key in self.meters[phase]:
@@ -520,8 +414,6 @@ class SingleGPUTrainer:
         # it's important to set grads to None, especially with Adam since 0
         # grads will also update a model even if the step doesn't produce
         # gradients
-        if self.steps[phase] % self.accumulate_grad_batches == 0:
-            self.optim.zero_grad(set_to_none=True)
         with torch.cuda.amp.autocast(
             enabled=self.optim_conf.amp.enabled,
             dtype=get_amp_type(self.optim_conf.amp.amp_dtype),
@@ -543,7 +435,6 @@ class SingleGPUTrainer:
             else:
                 return
 
-        self.scaler.scale(loss).backward()
         loss_mts[loss_key].update(loss.item(), batch_size)
         for extra_loss_key, extra_loss in extra_losses.items():
             if extra_loss_key not in extra_loss_mts:
@@ -730,12 +621,9 @@ class SingleGPUTrainer:
         # epoch was incremented in the loop but the val step runs out of the loop
         self.epoch -= 1 
 
-    def run_val(self):
-        if not self.val_dataset:
-            return
-
-        dataloader = self.val_dataset.get_loader(epoch=int(self.epoch))
-        outs = self.val_epoch(dataloader, phase=Phase.VAL)
+    def run(self):
+        dataloader = self.test_dataset.get_loader(epoch=int(self.epoch))
+        outs = self.test_epoch(dataloader, phase=Phase.VAL)
         del dataloader
         gc.collect()
         self.logger.log_dict(outs, self.epoch)  # Logged only on rank 0
@@ -747,12 +635,12 @@ class SingleGPUTrainer:
             ) as f:
                 f.write(json.dumps(outs) + "\n")
 
-    def val_epoch(self, val_loader, phase):
+    def test_epoch(self, test_loader, phase):
         batch_time = AverageMeter("Batch Time", self.device, ":.2f")
         data_time = AverageMeter("Data Time", self.device, ":.2f")
         mem = MemMeter("Mem (GB)", self.device, ":.2f")
 
-        iters_per_epoch = len(val_loader)
+        iters_per_epoch = len(test_loader)
 
         curr_phases = [phase]
         curr_models = [self.model]
@@ -781,7 +669,7 @@ class SingleGPUTrainer:
 
         end = time.time()
 
-        for data_iter, batch in enumerate(val_loader):
+        for data_iter, batch in enumerate(test_loader):
 
             # measure data loading time
             data_time.update(time.time() - end)
@@ -859,24 +747,6 @@ class SingleGPUTrainer:
         self._reset_meters(curr_phases)
         logging.info(f"Meters: {out_dict}")
         return out_dict
-
-    def run(self):
-        assert self.mode in ["train", "train_only", "val"]
-        if self.mode == "train":
-            if self.epoch > 0:
-                logging.info(f"Resuming training from epoch: {self.epoch}")
-                # resuming from a checkpoint
-                if self.is_intermediate_val_epoch(self.epoch - 1):
-                    logging.info("Running previous val epoch")
-                    self.epoch -= 1
-                    self.run_val()
-                    self.epoch += 1
-            self.run_train()
-            self.run_val()
-        elif self.mode == "val":
-            self.run_val()
-        elif self.mode == "train_only":
-            self.run_train()
     
     def _log_loss_detailed_and_return_core_loss(self, loss, loss_str, step):
         core_loss = loss.pop(CORE_LOSS_KEY)

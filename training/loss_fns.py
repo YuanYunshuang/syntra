@@ -237,13 +237,13 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
     ):  
         # save src and target masks for visualization
-        import os
-        from torchvision.utils import make_grid
-        from torchvision.transforms import ToPILImage
-        imgs = torch.cat([src_masks.sigmoid(), target_masks], dim=0)
-        grid = make_grid(imgs.repeat(1, 3, 1, 1), nrow=8, padding=5, pad_value=0.5)
-        grid_img = ToPILImage()(grid.cpu())
-        grid_img.save(f'{os.environ["HOME"]}/Downloads/mask_grid.png')
+        # import os
+        # from torchvision.utils import make_grid
+        # from torchvision.transforms import ToPILImage
+        # imgs = torch.cat([src_masks.sigmoid(), target_masks], dim=0)
+        # grid = make_grid(imgs.repeat(1, 3, 1, 1), nrow=8, padding=5, pad_value=0.5)
+        # grid_img = ToPILImage()(grid.cpu())
+        # grid_img.save(f'{os.environ["HOME"]}/Downloads/mask_grid.png')
 
         # get focal, dice and iou loss on all output masks in a prediction step
         if self.ce_loss:
@@ -294,15 +294,17 @@ class MultiStepMultiMasksAndIous(nn.Module):
                     alpha=self.focal_alpha_obj_score,
                     gamma=self.focal_gamma_obj_score,
                 )
-
-        loss_multiiou = iou_loss(
-            src_masks,
-            target_masks,
-            ious,
-            num_objects, # each mask has only one object
-            loss_on_multimask=True,
-            use_l1_loss=self.iou_use_l1_loss,
-        )
+        if self.supervise_all_iou:
+            loss_multiiou = iou_loss(
+                src_masks,
+                target_masks,
+                ious,
+                num_objects, # each mask has only one object
+                loss_on_multimask=True,
+                use_l1_loss=self.iou_use_l1_loss,
+            )
+        else:
+            loss_multiiou = torch.zeros_like(loss_multimask)
         assert loss_multimask.dim() == 2
         assert loss_multidice.dim() == 2
         assert loss_multiiou.dim() == 2
@@ -331,6 +333,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         loss_mask = loss_mask * target_obj
         loss_dice = loss_dice * target_obj
         loss_iou = loss_iou * target_obj
+        
 
         # sum over batch dimension (note that the losses are already divided by num_objects)
         losses["loss_mask"] += loss_mask.sum()

@@ -51,6 +51,7 @@ def collect_dict_keys(config):
 class Phase:
     TRAIN = "train"
     VAL = "val"
+    TEST = "test"
 
 
 def register_omegaconf_resolvers():

@@ -74,9 +74,6 @@ def main(args) -> None:
     cfg.dataset.split = (
         args.data_split if args.data_split is not None else cfg.dataset.split
     )
-    cfg.dataset.root = (
-        args.data_root if args.data_root is not None else cfg.dataset.root
-    )
     
     main_port = random.randint(
             cfg.launcher.port_range[0], cfg.launcher.port_range[1]
@@ -91,10 +88,8 @@ if __name__=="__main__":
                         help="config file path")
     parser.add_argument("-bs", "--batch_size", type=int, default=None, 
                         help="batch size for training")
-    parser.add_argument("-dr", "--data-root", type=str, default=None, 
-                        help="the root directory that contains all datasets")
     parser.add_argument("-split", "--data_split", type=int, default=None, 
-                        help="a json file that list all data samples for training")
+                        help="number of samples for fewshot learning")
     parser.add_argument("-dset", "--dataset", type=str, default=None, 
                         help="dataset names in a row, split by comma, if not set, all datasets will be used")
     args = parser.parse_args()

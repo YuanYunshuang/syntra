@@ -104,7 +104,7 @@ class PromptEncoder(nn.Module):
 
         B, T, N = masks.shape[:3]
         H, W = src_emb.shape[-2:]
-        L = T * H * W
+        L = H * W
         mask_embeddings = self.mask_downscaling(masks.flatten(0, 2).unsqueeze(1))  # (B*T*N)xCxhxw
         mask_embeddings = mask_embeddings.view(B, T, N, self.embed_dim, H, W)
 
@@ -129,26 +129,21 @@ class PromptEncoder(nn.Module):
         dense_embeddings = None
 
         prompt_embeddings = prompt_embeddings.permute(0, 2, 1, 4, 5, 3) # BxNxTxHxWxC
-        prompt_embeddings = prompt_embeddings.flatten(0, 1).flatten(1, 3) # (B*N)x(L)xC, L=T*H*W
-
-        # src_pos_emb = src_pos_emb.unsqueeze(2).repeat(1, 1, N, 1, 1, 1) # BxTxNxHxWxC
-        # src_pos_emb = src_pos_emb.permute(0, 2, 1, 4, 5, 3) # BxNxTxHxWxC
-        # src_pos_emb = src_pos_emb.flatten(0, 1).flatten(1, 3) # (B*N)x(L)xC, L=T*H*W
-        src_pos_emb = None
+        prompt_embeddings = prompt_embeddings.flatten(0, 2).flatten(1, 2) # (B*N*T)x(L)xC, L=H*W
 
         # process notion embeddings with notion attention
-        # Nt, C -> 1xNtxC -> (B*N)xNtxC
-        notion_embeddings = self.notion_embeddings.weight.unsqueeze(0).repeat(B*N, 1, 1)
-        # 1xCxHxW -> (B*N)x(L)xC, L=T*H*W
-        pos_emb = self.get_dense_pe().flatten(2).permute(0, 2, 1).unsqueeze(0)
-        pos_emb = pos_emb.repeat(B*N, T, 1, 1).view(B*N, L, self.embed_dim)
+        # Nt, C -> 1xNtxC -> (B*N*T)xNtxC
+        notion_embeddings = self.notion_embeddings.weight.unsqueeze(0).repeat(B*N*T, 1, 1)
+        # 1xCxHxW -> (B*N*T)x(L)xC, L=H*W
+        pos_emb = self.get_dense_pe().flatten(2).permute(0, 2, 1)
+        pos_emb = pos_emb.repeat(B*N*T, 1, 1)
         notions = self.notion_attention(
             prompt_embeddings,
             notion_embeddings,
             pos_emb,
-        ) # (B*N_notion)xN_tokenxC
+        ) # (B*N*T)xNtxC
 
-        notions = notions.view(B, N, self.num_tokens_per_notion, self.embed_dim)
+        notions = notions.view(B, N, T, self.num_tokens_per_notion, self.embed_dim).flatten(2, 3) # BxNx(T*Nt)xC
 
         return notions, dense_embeddings
     

@@ -87,7 +87,7 @@ class PromptAttentionLayer(nn.Module):
         activation: str,
         d_model: int,
         dim_feedforward: int,
-        self_attention: nn.Module,
+        self_attention: nn.Module = None,
         dropout: float = 0.1,
         pos_enc_at_attn: bool = True,
     ):
@@ -136,11 +136,11 @@ class NotionAttention(nn.Module):
         self,
         d_model: int,
         cross_attention: nn.Module,
-        self_attention: nn.Module,
         dim_feedforward: int,
-        num_sa_layers: int,
         num_ca_layers: int,
         activation: str,
+        self_attention: nn.Module = None,
+        num_sa_layers: int = 4,
         pos_enc_at_attn: bool = True,  # Add pos enc at self-attn?
         pos_enc_at_cross_attn_keys: bool = True,  # Add pos enc at cross-attn keys?
         pos_enc_at_cross_attn_queries: bool = False,  # Add pos enc at cross-attn queries?
@@ -148,13 +148,19 @@ class NotionAttention(nn.Module):
     ):
         super().__init__()
         self.d_model = d_model
-        self.sa_layers = get_clones(PromptAttentionLayer(
-            activation=activation,
-            d_model=d_model,
-            dim_feedforward=dim_feedforward,
-            self_attention=self_attention,
-            pos_enc_at_attn=pos_enc_at_attn,
-        ), num_sa_layers)
+
+        if self_attention is not None: 
+            assert num_sa_layers > 0, "If self_attention is provided, num_sa_layers should be > 0"
+            self.sa_layers = get_clones(PromptAttentionLayer(
+                activation=activation,
+                d_model=d_model,
+                dim_feedforward=dim_feedforward,
+                self_attention=self_attention,
+                pos_enc_at_attn=pos_enc_at_attn,
+            ), num_sa_layers)
+        else:
+            self.sa_layers = None
+        
         self.ca_layers = get_clones(NotionAttentionLayer(
             activation=activation,
             cross_attention=cross_attention,
@@ -186,8 +192,10 @@ class NotionAttention(nn.Module):
                 notion_pos = notion_pos.transpose(0, 1)
 
         # Self-Attention layers on prompt embeddings
-        # for layer in self.sa_layers:
-        #     prompt_emb = layer(prompt=prompt_emb, prompt_pos=prompt_pos)
+        if self.sa_layers is not None:
+            for layer in self.sa_layers:
+                prompt_emb = layer(prompt=prompt_emb, prompt_pos=prompt_pos)
+
         # Cross-Attention layers on notion embeddings
         for layer in self.ca_layers:
             kwds = {}

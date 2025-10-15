@@ -3,6 +3,7 @@
 scratch:
   resolution: 384
   train_batch_size: 8
+  val_batch_size: 16
   num_train_workers: 4
   num_src: 3
   num_notions: 1
@@ -12,7 +13,8 @@ scratch:
   vision_lr: 1.0e-5
   phases_per_epoch: 1
   num_iterations: 40000
-  num_epochs: 400
+  num_epochs: 500
+  val_epoch_freq: 20
 
 dataset:
   name: SynTra
@@ -39,12 +41,20 @@ syntra:
         - _target_: training.dataset.transforms.NormalizeAPI
           mean: [0.485, 0.456, 0.406]
           std: [0.229, 0.224, 0.225]
+  val_transforms:
+    - _target_: training.dataset.transforms.ComposeAPI
+      transforms:
+        - _target_: training.dataset.transforms.ToTensorAPI
+        - _target_: training.dataset.transforms.NormalizeAPI
+          mean: [0.485, 0.456, 0.406]
+          std: [0.229, 0.224, 0.225]
 
 trainer:
   _target_: training.trainer.SingleGPUTrainer
   mode: train_only
   max_epochs: ${times:${scratch.num_epochs},${scratch.phases_per_epoch}}
   seed_value: 123
+  val_epoch_freq: ${scratch.val_epoch_freq}
   # number of batches to accumulate gradients
   accumulate_grad_batches: 4
 
@@ -73,37 +83,28 @@ trainer:
     notion_attention:
       _target_: syntra.modeling.notion_attention.NotionAttention
       d_model: 256
-      dim_feedforward: 2038
+      dim_feedforward: 2048
       num_sa_layers: 4
       num_ca_layers: 4
       pos_enc_at_attn: false
-      pos_enc_at_cross_attn_keys: false
+      pos_enc_at_cross_attn_keys: true
       pos_enc_at_cross_attn_queries: false
       activation: relu
       cross_attention:
-        _target_: syntra.modeling.transformer.RoPEAttention
-        rope_theta: 10000.0
-        feat_sizes: [64, 64]
-        rope_k_repeat: True
+        _target_: syntra.modeling.transformer.Attention
         embedding_dim: 256
         num_heads: 1
         downsample_rate: 1
         dropout: 0.1
         kv_in_dim: 256
-      self_attention: 
-        _target_: syntra.modeling.transformer.RoPEAttention
-        rope_theta: 10000.0
-        feat_sizes: [64, 64]
-        embedding_dim: 256
-        num_heads: 1
-        downsample_rate: 1
-        dropout: 0.1
     # input image resolution
     image_size: ${scratch.resolution}
     # dora rank for image encoder, dora_rank=0 means no dora
     dora_rank: 8
     # number of notions == number of masks predicted for each target image
     num_notions: ${scratch.num_notions}
+    # number of tokens per notion
+    num_tokens_per_notion: ${scratch.num_tokens_per_notion} 
     # whether to use high-resolution feature maps in the SAM mask decoder
     use_high_res_features: true
     # whether to use sigmoid to restrict ious prediction to [0-1]
@@ -113,13 +114,11 @@ trainer:
     # Whether to use an MLP to predict object scores
     pred_obj_scores_mlp: true
 
-
   data:
     train:
       _target_: training.dataset.syntra_datasets.TorchTrainMixedDataset
       phases_per_epoch: ${scratch.phases_per_epoch}
       batch_sizes:
-        - ${scratch.train_batch_size}
         - ${scratch.train_batch_size}
       auto_parse_datasets: ['donauwoerth.a', 'donauwoerth.b', 'hameln.a', 'hameln.b', 'siegfried.railway', 'siegfried.vineyard'] # all or a list of dataset names 
       multipliers: [1., 1., 1., 1., 1., 1.] #[1., 2., 0.2, 0.2, 0.16,   1.7]
@@ -143,10 +142,46 @@ trainer:
                 max_num_cls: ${scratch.max_num_cls}
               multiplier: ${dataset.multiplier}
 
-      shuffle: True
+      shuffle: true
+      num_workers: ${scratch.num_train_workers}
+      pin_memory: true
+      drop_last: true
+      collate_fn:
+        _target_: training.utils.data_utils.collate_fn
+        _partial_: true
+        dict_key: all
+
+    val:
+      _target_: training.dataset.syntra_datasets.TorchTrainMixedDataset
+      phases_per_epoch: ${scratch.phases_per_epoch}
+      batch_sizes:
+        - ${scratch.val_batch_size}
+      auto_parse_datasets: ['donauwoerth.a', 'donauwoerth.b', 'hameln.a', 'hameln.b', 'siegfried.railway', 'siegfried.vineyard'] # all or a list of dataset names 
+      multipliers: [1., 1., 1., 1., 1., 1.] #[1., 2., 0.2, 0.2, 0.16,   1.7]
+
+      datasets:
+        - _target_: training.dataset.utils.RepeatFactorWrapper
+          dataset:
+            _target_: training.dataset.utils.ConcatDataset
+            datasets:
+            - _target_: training.dataset.syntra_dataset.SynTraDataset
+              transforms: ${syntra.val_transforms}
+              notion_size: ${scratch.num_notions}
+              training: false
+              syntra_dataset:
+                _target_: training.dataset.syntra_raw_dataset.PNGRawDataset
+                root_folder: ${dataset.root}
+                data_info_file: paring_val_intercls.json
+              sampler:
+                _target_: training.dataset.syntra_sampler.RandomUniformSampler
+                num_src: ${scratch.num_src}
+                max_num_cls: ${scratch.max_num_cls}
+              multiplier: ${dataset.multiplier}
+
+      shuffle: false
       num_workers: ${scratch.num_train_workers}
       pin_memory: True
-      drop_last: True
+      drop_last: false
       collate_fn:
         _target_: training.utils.data_utils.collate_fn
         _partial_: true
@@ -213,9 +248,9 @@ trainer:
         loss_dice: 1
         loss_iou: 1
         loss_class: 0.1
-      supervise_all_iou: true
+      supervise_all_iou: false
       iou_use_l1_loss: true
-      pred_obj_scores: true
+      pred_obj_scores: false
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1.0
       ce_loss: false
