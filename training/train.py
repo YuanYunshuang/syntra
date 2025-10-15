@@ -77,6 +77,9 @@ def main(args) -> None:
     cfg.dataset.root = (
         args.data_root if args.data_root is not None else cfg.dataset.root
     )
+    cfg.scratch.num_epochs = (
+        args.max_epochs if args.batch_size is not None else cfg.scratch.num_epochs
+    )
     
     main_port = random.randint(
             cfg.launcher.port_range[0], cfg.launcher.port_range[1]
@@ -93,6 +96,8 @@ if __name__=="__main__":
                         help="batch size for training")
     parser.add_argument("-dr", "--data-root", type=str, default=None, 
                         help="the root directory that contains all datasets")
+    parser.add_argument("-e", "--max-epochs", type=int, default=None,
+                        help="max training epochs")
     parser.add_argument("-split", "--data_split", type=int, default=None, 
                         help="a json file that list all data samples for training")
     parser.add_argument("-dset", "--dataset", type=str, default=None, 

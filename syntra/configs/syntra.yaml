@@ -13,7 +13,7 @@ scratch:
   vision_lr: 1.0e-5
   phases_per_epoch: 1
   num_iterations: 40000
-  num_epochs: 500
+  num_epochs: 800
   val_epoch_freq: 20
 
 dataset:
