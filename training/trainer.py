@@ -368,16 +368,6 @@ class SingleGPUTrainer:
         if "train_dataset" in checkpoint and self.train_dataset is not None:
             self.train_dataset.load_checkpoint_state(checkpoint["train_dataset"])
 
-    def _setup_dataloaders(self):
-        self.train_dataset = None
-        self.val_dataset = None
-
-        if self.mode in ["train", "val"]:
-            self.val_dataset = instantiate(self.data_conf.get(Phase.VAL, None))
-
-        if self.mode in ["train", "train_only"]:
-            self.train_dataset = instantiate(self.data_conf.train)
-
     def save_checkpoint(self, epoch, checkpoint_names=None):
         checkpoint_folder = self.checkpoint_conf.save_dir
         makedir(checkpoint_folder)
@@ -838,8 +828,8 @@ class SingleGPUTrainer:
                         self.steps[Phase.VAL],
                     )
 
-            if data_iter % 10 == 0:
-                dist.barrier()
+            # if data_iter % 10 == 0:
+            #     dist.barrier()
 
         self.est_epoch_time[phase] = batch_time.avg * iters_per_epoch
         self._log_timers(phase)

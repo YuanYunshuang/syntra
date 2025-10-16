@@ -62,12 +62,8 @@ class SynTraTrain(SynTraBase):
                          f"Ratio: {num_trainable_params / total_params * 100: .02f}%.")
 
     def forward(self, input: BatchedSrcTgtDatapoint):
-        if self.training:
-            # precompute image features on all frames before tracking
-            backbone_out = self.forward_image(input.img_batch)
-        else:
-            # defer image feature computation on a frame until it's being tracked
-            backbone_out = {"backbone_fpn": None, "vision_pos_enc": None}
+        # precompute image features on all frames 
+        backbone_out = self.forward_image(input.img_batch)
         
         # forward heads
         src_features, src_pos_embeds = self._prepare_prompt_input(

@@ -33,8 +33,8 @@ def single_proc_run(local_rank, main_port, cfg, world_size):
     except Exception as e:
         logging.info(e)
 
-    trainer = instantiate(cfg.trainer, _recursive_=False)
-    trainer.run()
+    tester = instantiate(cfg.tester, _recursive_=False)
+    tester.run()
 
 
 def add_pythonpath_to_sys_path():

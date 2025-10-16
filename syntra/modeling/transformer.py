@@ -25,6 +25,7 @@ class TwoWayTransformer(nn.Module):
         mlp_dim: int,
         activation: Type[nn.Module] = nn.ReLU,
         attention_downsample_rate: int = 2,
+        self_attend_key_at_output: bool = False,
     ) -> None:
         """
         A transformer decoder that attends to an input image using
@@ -54,6 +55,7 @@ class TwoWayTransformer(nn.Module):
                     activation=activation,
                     attention_downsample_rate=attention_downsample_rate,
                     skip_first_layer_pe=(i == 0),
+                    self_attend_key_at_output=self_attend_key_at_output,
                 )
             )
 
@@ -118,6 +120,7 @@ class TwoWayAttentionBlock(nn.Module):
         activation: Type[nn.Module] = nn.ReLU,
         attention_downsample_rate: int = 2,
         skip_first_layer_pe: bool = False,
+        self_attend_key_at_output: bool = False,
     ) -> None:
         """
         A transformer block with four layers: (1) self-attention of sparse
@@ -152,6 +155,10 @@ class TwoWayAttentionBlock(nn.Module):
         )
 
         self.skip_first_layer_pe = skip_first_layer_pe
+        self.self_attend_key = None
+        if self_attend_key_at_output:
+            self.self_attend_key = Attention(embedding_dim, num_heads)
+            self.norm5 = nn.LayerNorm(embedding_dim)
 
     def forward(
         self, queries: Tensor, keys: Tensor, query_pe: Tensor, key_pe: Tensor
@@ -183,6 +190,12 @@ class TwoWayAttentionBlock(nn.Module):
         attn_out = self.cross_attn_image_to_token(q=k, k=q, v=queries)
         keys = keys + attn_out
         keys = self.norm4(keys)
+
+        if self.self_attend_key is not None:
+            k = keys + key_pe
+            attn_out = self.self_attend_key(q=k, k=k, v=keys)
+            keys = keys + attn_out
+            keys = self.norm5(keys)
 
         return queries, keys
 

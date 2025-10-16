@@ -117,6 +117,8 @@ trainer:
     pred_obj_scores: true
     # Whether to use an MLP to predict object scores
     pred_obj_scores_mlp: true
+    # Whether to use dense prompt embedding
+    use_dense_prompt_embeddings: true
 
   data:
     train:

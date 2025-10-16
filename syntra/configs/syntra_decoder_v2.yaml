@@ -60,7 +60,7 @@ trainer:
   seed_value: 123
   val_epoch_freq: ${scratch.val_epoch_freq}
   # number of batches to accumulate gradients
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 8
 
   model:
     _target_: training.model.syntra.SynTraTrain
@@ -104,7 +104,7 @@ trainer:
     # input image resolution
     image_size: ${scratch.resolution}
     # dora rank for image encoder, dora_rank=0 means no dora
-    dora_rank: 8
+    dora_rank: 16
     # number of notions == number of masks predicted for each target image
     num_notions: ${scratch.num_notions}
     # number of tokens per notion
@@ -117,6 +117,9 @@ trainer:
     pred_obj_scores: true
     # Whether to use an MLP to predict object scores
     pred_obj_scores_mlp: true
+    # Whether to use self attention at the output of the transformer in mask decoder
+    self_attention_at_decoder_output: true
+
 
   data:
     train:

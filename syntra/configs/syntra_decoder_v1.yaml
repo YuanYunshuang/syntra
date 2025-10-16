@@ -1,0 +1,292 @@
+# @package _global_
+
+scratch:
+  resolution: 384
+  train_batch_size: 8
+  val_batch_size: 16
+  num_train_workers: 4
+  num_src: 3
+  num_notions: 1
+  num_tokens_per_notion: 4
+  max_num_cls: 4
+  base_lr: 1.0e-05
+  vision_lr: 1.0e-05
+  phases_per_epoch: 1
+  num_iterations: 40000
+  num_epochs: 800
+  val_epoch_freq: 20
+dataset:
+  name: SynTra
+  root: /home/yuan/data/HisMap/syntra384
+  split: paring_nshot100_intercls.json
+  multiplier: 1
+syntra:
+  train_transforms:
+  - _target_: training.dataset.transforms.ComposeAPI
+    transforms:
+    - _target_: training.dataset.transforms.RandomHorizontalFlip
+      consistent_transform: true
+    - _target_: training.dataset.transforms.RandomAffine
+      degrees: 25
+      shear: 5
+      image_interpolation: bilinear
+      consistent_transform: true
+    - _target_: training.dataset.transforms.RandomResizeAPI
+      sizes: ${scratch.resolution}
+      square: true
+      consistent_transform: true
+    - _target_: training.dataset.transforms.ToTensorAPI
+    - _target_: training.dataset.transforms.NormalizeAPI
+      mean:
+      - 0.485
+      - 0.456
+      - 0.406
+      std:
+      - 0.229
+      - 0.224
+      - 0.225
+  val_transforms:
+  - _target_: training.dataset.transforms.ComposeAPI
+    transforms:
+    - _target_: training.dataset.transforms.ToTensorAPI
+    - _target_: training.dataset.transforms.NormalizeAPI
+      mean:
+      - 0.485
+      - 0.456
+      - 0.406
+      std:
+      - 0.229
+      - 0.224
+      - 0.225
+trainer:
+  _target_: training.trainer.SingleGPUTrainer
+  mode: train_only
+  max_epochs: ${times:${scratch.num_epochs},${scratch.phases_per_epoch}}
+  seed_value: 123
+  val_epoch_freq: ${scratch.val_epoch_freq}
+  accumulate_grad_batches: 4
+  model:
+    _target_: training.model.syntra.SynTraTrain
+    image_encoder:
+      _target_: syntra.modeling.backbones.image_encoder.ImageEncoder
+      scalp: 1
+      trunk:
+        _target_: syntra.modeling.backbones.hieradet.Hiera
+        embed_dim: 112
+        num_heads: 2
+        drop_path_rate: 0.1
+      neck:
+        _target_: syntra.modeling.backbones.image_encoder.FpnNeck
+        position_encoding:
+          _target_: syntra.modeling.position_encoding.PositionEmbeddingSine
+          num_pos_feats: 256
+          normalize: true
+          scale: null
+          temperature: 10000
+        d_model: 256
+        backbone_channel_list:
+        - 896
+        - 448
+        - 224
+        - 112
+        fpn_top_down_levels:
+        - 2
+        - 3
+        fpn_interp_model: nearest
+    notion_attention:
+      _target_: syntra.modeling.notion_attention.NotionAttention
+      d_model: 256
+      dim_feedforward: 2048
+      num_sa_layers: 4
+      num_ca_layers: 4
+      pos_enc_at_attn: false
+      pos_enc_at_cross_attn_keys: true
+      pos_enc_at_cross_attn_queries: false
+      activation: relu
+      cross_attention:
+        _target_: syntra.modeling.transformer.Attention
+        embedding_dim: 256
+        num_heads: 1
+        downsample_rate: 1
+        dropout: 0.1
+        kv_in_dim: 256
+    image_size: ${scratch.resolution}
+    dora_rank: 8
+    num_notions: ${scratch.num_notions}
+    num_tokens_per_notion: ${scratch.num_tokens_per_notion}
+    use_high_res_features: true
+    iou_prediction_use_sigmoid: true
+    pred_obj_scores: true
+    pred_obj_scores_mlp: true
+  data:
+    train:
+      _target_: training.dataset.syntra_datasets.TorchTrainMixedDataset
+      phases_per_epoch: ${scratch.phases_per_epoch}
+      batch_sizes:
+      - ${scratch.train_batch_size}
+      auto_parse_datasets:
+      - donauwoerth.a
+      - donauwoerth.b
+      - hameln.a
+      - hameln.b
+      - siegfried.railway
+      - siegfried.vineyard
+      multipliers:
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      datasets:
+      - _target_: training.dataset.utils.RepeatFactorWrapper
+        dataset:
+          _target_: training.dataset.utils.ConcatDataset
+          datasets:
+          - _target_: training.dataset.syntra_dataset.SynTraDataset
+            transforms: ${syntra.train_transforms}
+            notion_size: ${scratch.num_notions}
+            training: true
+            syntra_dataset:
+              _target_: training.dataset.syntra_raw_dataset.PNGRawDataset
+              root_folder: ${dataset.root}
+              data_info_file: ${dataset.split}
+            sampler:
+              _target_: training.dataset.syntra_sampler.RandomUniformSampler
+              num_src: ${scratch.num_src}
+              max_num_cls: ${scratch.max_num_cls}
+            multiplier: ${dataset.multiplier}
+      shuffle: true
+      num_workers: ${scratch.num_train_workers}
+      pin_memory: true
+      drop_last: true
+      collate_fn:
+        _target_: training.utils.data_utils.collate_fn
+        _partial_: true
+        dict_key: all
+    val:
+      _target_: training.dataset.syntra_datasets.TorchTrainMixedDataset
+      phases_per_epoch: ${scratch.phases_per_epoch}
+      batch_sizes:
+      - ${scratch.val_batch_size}
+      auto_parse_datasets:
+      - donauwoerth.a
+      - donauwoerth.b
+      - hameln.a
+      - hameln.b
+      - siegfried.railway
+      - siegfried.vineyard
+      multipliers:
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      datasets:
+      - _target_: training.dataset.utils.RepeatFactorWrapper
+        dataset:
+          _target_: training.dataset.utils.ConcatDataset
+          datasets:
+          - _target_: training.dataset.syntra_dataset.SynTraDataset
+            transforms: ${syntra.val_transforms}
+            notion_size: ${scratch.num_notions}
+            training: false
+            syntra_dataset:
+              _target_: training.dataset.syntra_raw_dataset.PNGRawDataset
+              root_folder: ${dataset.root}
+              data_info_file: paring_val_intercls.json
+            sampler:
+              _target_: training.dataset.syntra_sampler.RandomUniformSampler
+              num_src: ${scratch.num_src}
+              max_num_cls: ${scratch.max_num_cls}
+            multiplier: ${dataset.multiplier}
+      shuffle: false
+      num_workers: ${scratch.num_train_workers}
+      pin_memory: true
+      drop_last: false
+      collate_fn:
+        _target_: training.utils.data_utils.collate_fn
+        _partial_: true
+        dict_key: all
+  optim:
+    amp:
+      enabled: true
+      amp_dtype: bfloat16
+    optimizer:
+      _target_: torch.optim.AdamW
+      weight_decay: 0.01
+    options:
+      lr:
+      - scheduler:
+          _target_: fvcore.common.param_scheduler.CompositeParamScheduler
+          schedulers:
+          - _target_: fvcore.common.param_scheduler.LinearParamScheduler
+            start_value: 1.0e-07
+            end_value: ${scratch.base_lr}
+          - _target_: fvcore.common.param_scheduler.CosineParamScheduler
+            start_value: ${scratch.base_lr}
+            end_value: ${divide:${scratch.base_lr},100}
+          lengths:
+          - 0.1
+          - 0.9
+          interval_scaling:
+          - rescaled
+          - rescaled
+  loss:
+    all:
+      _target_: training.loss_fns.MultiStepMultiMasksAndIous
+      weight_dict:
+        loss_mask: 20
+        loss_dice: 1
+        loss_iou: 1
+        loss_class: 0.1
+      supervise_all_iou: false
+      iou_use_l1_loss: true
+      pred_obj_scores: false
+      focal_gamma_obj_score: 0.0
+      focal_alpha_obj_score: -1.0
+      ce_loss: false
+  logging:
+    tensorboard_writer:
+      _target_: training.utils.logger.make_tensorboard_logger
+      log_dir: ${launcher.experiment_log_dir}/tensorboard
+      flush_secs: 120
+      should_log: true
+    log_dir: ${launcher.experiment_log_dir}/logs
+    log_freq: 10
+    log_visual_frequency: 50
+  checkpoint:
+    save_dir: ${launcher.experiment_log_dir}/checkpoints
+    save_freq: 0
+    model_weight_initializer:
+      _partial_: true
+      _target_: training.utils.checkpoint_utils.load_sam2_img_encoder_to_syntra
+      strict: true
+      state_dict:
+        _target_: training.utils.checkpoint_utils.load_checkpoint_and_apply_kernels
+        checkpoint_path: ./checkpoints/sam2.1_hiera_base_plus.pt
+        ckpt_state_dict_keys:
+        - model
+
+launcher:
+  experiment_log_dir: null # Path to log directory, defaults to ./sam2_logs/${config_name}
+  port_range: [10000, 65000]
+
+tester:
+  _target_: training.tester.Tester
+  seed_value: 123
+
+  model: ${trainer.model}
+
+  optim: ${trainer.optim} # for amp
+
+  data:
+    test: ${trainer.data.val}
+
+  loss: ${trainer.loss}
+
+  logging:
+    log_dir: ${launcher.experiment_log_dir}/logs
+
+  checkpoint: ${trainer.checkpoint}

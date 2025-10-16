@@ -23,6 +23,7 @@ class PromptEncoder(nn.Module):
         num_tokens_per_notion: int,
         notion_attention: nn.Module,
         num_notion_embeddings: int = 4,
+        use_dense_embeddings: bool = True,
         activation: Type[nn.Module] = nn.GELU,
     ) -> None:
         """
@@ -44,6 +45,7 @@ class PromptEncoder(nn.Module):
         self.image_embedding_size = image_embedding_size
         self.num_notion_embeddings = num_notion_embeddings 
         self.num_tokens_per_notion = num_tokens_per_notion
+        self.use_dense_embeddings = use_dense_embeddings
 
         self.pe_layer = PositionEmbeddingRandom(embed_dim // 2)
         self.notion_embeddings = nn.Embedding(num_tokens_per_notion, embed_dim) 
@@ -125,8 +127,7 @@ class PromptEncoder(nn.Module):
         prompt_embeddings = src_emb.unsqueeze(2) * mask_embeddings
         prompt_embeddings = self.merge_image_mask_pair(prompt_embeddings.flatten(0, 2)) # (B*T*N)xCxHxW
         prompt_embeddings = prompt_embeddings.view(B, T, N, self.embed_dim, H, W) # BxTxNxCxHxW
-        # dense_embeddings = prompt_embeddings.max(dim=1).values # BxNxCxHxW
-        dense_embeddings = None
+        dense_embeddings = prompt_embeddings.max(dim=1).values if self.use_dense_embeddings else None # BxNxCxHxW
 
         prompt_embeddings = prompt_embeddings.permute(0, 2, 1, 4, 5, 3) # BxNxTxHxWxC
         prompt_embeddings = prompt_embeddings.flatten(0, 2).flatten(1, 2) # (B*N*T)x(L)xC, L=H*W

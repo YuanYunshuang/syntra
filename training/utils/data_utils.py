@@ -49,6 +49,7 @@ class BatchedSrcTgtDatapoint:
     src_mask_batch: torch.BoolTensor
     tgt_mask_batch: torch.BoolTensor
     metadata: Optional[BatchedSrcTgtMetaData]
+    sample_names: Optional[List[List[str]]]
 
     dict_key: str
 
@@ -110,6 +111,7 @@ class Notion:
 
 @dataclass
 class Frame:
+    sample_name: str
     data: Union[torch.Tensor, PILImage.Image]
     notions: List[Notion]
 
@@ -178,8 +180,10 @@ def collate_fn(
     img_batch = []
     tgt_msk_batch = []
     src_msk_batch = []
+    names_batch = []
     for tgt in batch:
         img_batch += [torch.stack([frame.data for frame in tgt.frames], dim=0)]
+        names_batch.append([frame.sample_name for frame in tgt.frames])
         valid_notion_ids = tgt.valid_src_notion_ids
         h, w = tgt.size
         # generate shuffle index for notions
@@ -208,6 +212,7 @@ def collate_fn(
         src_mask_batch=src_msk_batch,
         tgt_mask_batch=tgt_msk_batch,
         metadata=None,
+        sample_names=names_batch,
         dict_key=dict_key,
         batch_size=[B],
     )

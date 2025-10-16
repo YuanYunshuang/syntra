@@ -248,7 +248,7 @@ trainer:
     all:
       _target_: training.loss_fns.MultiStepMultiMasksAndIous
       weight_dict:
-        loss_mask: 20
+        loss_mask: 2
         loss_dice: 1
         loss_iou: 1
         loss_class: 0.1
@@ -257,7 +257,7 @@ trainer:
       pred_obj_scores: false
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1.0
-      ce_loss: false
+      ce_loss: true
 
   logging:
     tensorboard_writer:

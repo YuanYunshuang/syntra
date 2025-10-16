@@ -96,6 +96,7 @@ class SynTraDataset(VisionDataset):
             w, h = rgb_images[frame_idx].size
             images.append(
                 Frame(
+                    sample_name=frame.frame_id,
                     data=rgb_images[frame_idx],
                     notions=[],
                 )

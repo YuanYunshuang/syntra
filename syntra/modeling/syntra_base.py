@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch.nn.init import trunc_normal_
 
 from syntra.modeling.mask_decoder import MaskDecoder
+from syntra.modeling.mask_decoder_v2 import MaskDecoder as MaskDecoderV2
 from syntra.modeling.prompt_encoder import PromptEncoder
 from syntra.modeling.transformer import TwoWayTransformer
 from syntra.modeling.syntra_utils import get_1d_sine_pe, MLP, select_closest_cond_frames
@@ -38,6 +39,9 @@ class SynTraBase(torch.nn.Module):
         pred_obj_scores: bool = False,
         # Whether to use an MLP to predict object scores
         pred_obj_scores_mlp: bool = False,
+        # Whether to use self-attention on the key features at the output of the Mask decoder
+        self_attention_at_decoder_output: bool = False,
+        use_dense_prompt_embeddings: bool = True,
     ):
         super().__init__()
 
@@ -53,6 +57,7 @@ class SynTraBase(torch.nn.Module):
         self.hidden_dim = image_encoder.neck.d_model
         self.num_notions = num_notions  # Number of notions
         self.num_tokens_per_notion = num_tokens_per_notion
+        self.use_dense_prompt_embeddings = use_dense_prompt_embeddings
        
         # Apply sigmoid to the output raw mask logits (to turn them from
         # range (-inf, +inf) to range (0, 1)) before feeding them into the memory encoder
@@ -66,6 +71,7 @@ class SynTraBase(torch.nn.Module):
         self.backbone_stride = backbone_stride
         self.pred_obj_scores = pred_obj_scores
         self.pred_obj_scores_mlp = pred_obj_scores_mlp
+        self.self_attend_key_at_output = self_attention_at_decoder_output
 
         self._build_heads()
 
@@ -92,6 +98,7 @@ class SynTraBase(torch.nn.Module):
             notion_attention=self.notion_attention,
             num_notion_embeddings=self.num_notions,
             num_tokens_per_notion=self.num_tokens_per_notion
+            use_dense_embeddings=self.use_dense_prompt_embeddings,
         )
 
         self.mask_decoder = MaskDecoder(
@@ -100,6 +107,7 @@ class SynTraBase(torch.nn.Module):
                 embedding_dim=self.hidden_dim,
                 mlp_dim=2048,
                 num_heads=8,
+                self_attend_key_at_output=self.self_attend_key_at_output,
             ),
             transformer_dim=self.hidden_dim,
             iou_head_depth=3,

@@ -132,4 +132,4 @@ def visualize_generateion(dataset, pairing_info, mode='inter', n_vis = 5):
 
 if __name__=="__main__":
     data_root = "/home/yuan/data/HisMap/syntra384"
-    generate_src_tgt_inter_cls(data_root, "nshot100", k=8, visualize=False)
+    generate_src_tgt_inter_cls(data_root, "test", k=8, visualize=False)
