@@ -97,7 +97,7 @@ class SynTraBase(torch.nn.Module):
             input_image_size=(self.image_size, self.image_size),
             notion_attention=self.notion_attention,
             num_notion_embeddings=self.num_notions,
-            num_tokens_per_notion=self.num_tokens_per_notion
+            num_tokens_per_notion=self.num_tokens_per_notion,
             use_dense_embeddings=self.use_dense_prompt_embeddings,
         )
 
