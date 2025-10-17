@@ -9,8 +9,8 @@ scratch:
   num_notions: 1
   num_tokens_per_notion: 4
   max_num_cls: 4
-  base_lr: 1.0e-5
-  vision_lr: 1.0e-5
+  base_lr: 5.0e-5
+  vision_lr: 5.0e-5
   phases_per_epoch: 1
   num_iterations: 40000
   num_epochs: 800

@@ -26,6 +26,7 @@ class MaskDecoder(nn.Module):
         pred_obj_scores: bool = False,
         pred_obj_scores_mlp: bool = False,
         use_multimask_token_for_obj_ptr: bool = False,
+        pre_max_pool_dense_prompt: bool = True,
     ) -> None:
         """
         Predicts masks given an image and prompt embeddings, using a
@@ -46,6 +47,7 @@ class MaskDecoder(nn.Module):
         super().__init__()
         self.transformer_dim = transformer_dim
         self.transformer = transformer
+        self.pre_max_pool_dense_prompt = pre_max_pool_dense_prompt
 
         self.iou_token = nn.Embedding(1, transformer_dim)
         self.num_mask_tokens = 1
@@ -132,16 +134,16 @@ class MaskDecoder(nn.Module):
 
     def predict_masks(
         self,
-        image_embeddings: torch.Tensor,
+        image_embeddings: torch.Tensor, # BxNxCxHxW
         image_pe: torch.Tensor,
-        notion_embeddings: torch.Tensor,
-        dense_prompt_embeddings: Optional[torch.Tensor] = None,
+        notion_embeddings: torch.Tensor, # BxNxTxNtxC
+        dense_prompt_embeddings: Optional[torch.Tensor] = None, # BxNxTxCxHxW
         high_res_features: Optional[List[torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predicts masks. See 'forward' for more details."""
         # Concatenate output tokens
         s = 0
-        B, N, Nt, C = notion_embeddings.shape # B x N x Nt x C
+        B, N, T, Nt, C = notion_embeddings.shape # BxNxTxNtxC
         if self.pred_obj_scores:
             output_tokens = torch.cat(
                 [
@@ -160,51 +162,72 @@ class MaskDecoder(nn.Module):
                 ], dim=0
             ) # 2x256
 
-        output_tokens = output_tokens.unsqueeze(0).expand(B*N, -1, -1) # (B*N)x2x256 or (B*N)x3x256
-        tokens = torch.cat((output_tokens, notion_embeddings.flatten(0, 1)), dim=1) # (B*N)x(2+Nt)x256 or (B*N)x(3+Nt)x256
-
-        # repeat target image embeddings and pos emb
-        tgt = torch.repeat_interleave(image_embeddings.unsqueeze(1), N, dim=1).flatten(0, 1) # (B*N)xCxHxW
+        if not self.pre_max_pool_dense_prompt:
+            output_tokens = output_tokens.unsqueeze(0).expand(B*N*T, -1, -1) # (B*N*T)x2x256 or (B*N)xTx3x256
+            tokens = torch.cat((output_tokens, notion_embeddings.flatten(0, 2)), 
+                               dim=1) # (B*N*T)x(2+Nt)x256 or (B*N*T)x(3+Nt)x256
+            # repeat target image embeddings and pos emb
+            tgt = torch.repeat_interleave(image_embeddings.unsqueeze(1), N*T, dim=1).flatten(0, 1) # (B*N*T)xCxHxW
+            if dense_prompt_embeddings is not None:
+                dense_prompt_embeddings = dense_prompt_embeddings.flatten(0, 2)  # (B*N*T)xCxHxW
+        else:
+            output_tokens = output_tokens.unsqueeze(0).expand(B*N, -1, -1) # (B*N)x2x256 or (B*N)x3x256
+            tokens = torch.cat((output_tokens, notion_embeddings.flatten(0, 1).flatten(1, 2)), 
+                               dim=1) # (B*N)x(2+Nt*T)x256 or (B*N)x(3+Nt*T)x256
+            # repeat target image embeddings and pos emb
+            tgt = torch.repeat_interleave(image_embeddings.unsqueeze(1), N, dim=1).flatten(0, 1) # (B*N)xCxHxW
+            if dense_prompt_embeddings is not None:
+                dense_prompt_embeddings = dense_prompt_embeddings.flatten(0, 1).max(dim=1).values  # (B*N)xCxHxW
+        
         assert (
             image_pe.size(0) == 1
-        ), "image_pe should have size 1 in batch dim (from `get_dense_pe()`)"
-        pos_tgt = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0) # Bx256xHxW
-        b, c, h, w = tgt.shape
+        ), "image_pe should have size 1 in batch dim (from `get_dense_pe()`)"       
+        pos_tgt = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0) # (B*N)x256xHxW or (B*N*T)x256xHxW
+        b, c, h, w = tgt.shape # b=(B*N) or (B*N*T)
 
         if dense_prompt_embeddings is not None:
-            tgt = tgt + dense_prompt_embeddings.flatten(0, 1)
+            tgt = tgt + dense_prompt_embeddings
         # Run the transformer
         hs, tgt = self.transformer(tgt, pos_tgt, tokens)
-        iou_token_out = hs[:, s+1, :] # (B*N)x256
-        mask_token_out = hs[:, s+2, :] # (B*N)x256
+        iou_token_out = hs[:, s+1, :] # (B*N)x256 or (B*N*T)x256
+        mask_token_out = hs[:, s+2, :] # (B*N)x256 or (B*N*T)x256
 
         # Upscale mask embeddings and predict masks using the mask tokens
-        tgt = tgt.transpose(1, 2).view(b, c, h, w) # (BN)x(HW)xC -> (BN)xCxHxW
+        tgt = tgt.transpose(1, 2).view(b, c, h, w) # bx(HW)xC -> bxCxHxW
 
-        # upscaled_embedding = self.output_upscaling(tgt) # (BN)xC'xH'xW'
+        # upscaled_embedding = self.output_upscaling(tgt) # bxC'xH'xW'
         if not self.use_high_res_features:
             upscaled_embedding = self.output_upscaling(tgt)
         else:
             dc1, ln1, act1, dc2, act2 = self.output_upscaling
             feat_s0, feat_s1 = high_res_features
-            feat_s0 = torch.repeat_interleave(feat_s0.unsqueeze(1), N, dim=1).flatten(0, 1) # (B*N)xCxHxW
-            feat_s1 = torch.repeat_interleave(feat_s1.unsqueeze(1), N, dim=1).flatten(0, 1)
+            feat_s0 = torch.repeat_interleave(feat_s0.unsqueeze(1), b//B, dim=1).flatten(0, 1) # bxCxHxW
+            feat_s1 = torch.repeat_interleave(feat_s1.unsqueeze(1), b//B, dim=1).flatten(0, 1)
             upscaled_embedding = act1(ln1(dc1(tgt) + feat_s1))
             upscaled_embedding = act2(dc2(upscaled_embedding) + feat_s0)
 
-        hyper_in = self.output_hypernetworks_mlp(mask_token_out).unsqueeze(1) # (BN)x1x32
+        hyper_in = self.output_hypernetworks_mlp(mask_token_out).unsqueeze(1) # bx1x32
         b, c, h, w = upscaled_embedding.shape
-        # (BN)x1x32 @ (BN)x32x(HW) -> (BN)x1x(HW) -> BxNxHxW
-        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(B, N, h, w)
+        # bx1x32 @ bx32x(HW) -> bx1x(HW) -> BxNxHxW
+        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w))
 
         # Generate mask quality predictions
-        iou_pred = self.iou_prediction_head(iou_token_out).view(B, N) # BxN
+        iou_pred = self.iou_prediction_head(iou_token_out)
         if self.pred_obj_scores:
             assert s == 1
-            object_score_logits = self.pred_obj_score_head(hs[:, s, :]).view(B, N) # BxN
+            object_score_logits = self.pred_obj_score_head(hs[:, s, :])
         else:
             # Obj scores logits - default to 10.0, i.e. assuming the object is present, sigmoid(10)=1
             object_score_logits = 10.0 * iou_pred.new_ones(*iou_pred.shape)
+
+        if self.pre_max_pool_dense_prompt:
+            masks = masks.view(B, N, h, w)
+            iou_pred = iou_pred.view(B, N) # BxN
+            object_score_logits = object_score_logits.view(B, N) # BxN
+        else:
+            masks = masks.view(B, N, T, h, w).max(dim=2).values # BxNxHxW   
+            iou_pred = iou_pred.view(B, N, T).max(dim=2).values # BxN
+            object_score_logits = object_score_logits.view(B, N, T).max(dim=2).values # BxN
 
         return masks, iou_pred, mask_token_out, object_score_logits
 

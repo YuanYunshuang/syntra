@@ -89,13 +89,23 @@ def generate_donauwoerth(data_root_in, data_root_out, sheet_list=None):
                 map_patch_pil.save(os.path.join(img_out_dir, f"{name}_{x}_{y}.png"))
                 lbl_patch_pil.save(os.path.join(lbl_out_dir, f"{name}_{x}_{y}.png"))
 
+def conver_rgb_channels(root_out):
+    img_files = os.listdir(os.path.join(root_out + '.b', "imgs"))
+    os.makedirs(os.path.join(root_out + '.b', "images"), exist_ok=True)
+    for f in img_files:
+        img = Image.open(os.path.join(root_out + '.b', "imgs", f))
+        img = np.array(img)[:, :, ::-1]  # convert RGB to BGR
+        img = Image.fromarray(img)
+        img.save(os.path.join(root_out + '.b', "imgs", f))
+        
 
 if __name__ == "__main__":
     root_out = "/home/yuan/data/HisMap/syntra384/donauwoerth"
     # sheet in year 1959 has very different styles than other sheets, split it into a new dataset
-    list_a = [x for x in os.listdir(os.path.join(data_root_in, "maps")) if not '1959' in x]
-    list_b = [x for x in os.listdir(os.path.join(data_root_in, "maps")) if '1959' in x]
-    generate_donauwoerth(data_root_in, root_out + '.a', sheet_list=list_a)
-    generate_donauwoerth(data_root_in, root_out + '.b', sheet_list=list_b)
-    generate_colormap(root_out + '.a')
-    generate_colormap(root_out + '.b')
+    # list_a = [x for x in os.listdir(os.path.join(data_root_in, "maps")) if not '1959' in x]
+    # list_b = [x for x in os.listdir(os.path.join(data_root_in, "maps")) if '1959' in x]
+    # generate_donauwoerth(data_root_in, root_out + '.a', sheet_list=list_a)
+    # generate_donauwoerth(data_root_in, root_out + '.b', sheet_list=list_b)
+    # generate_colormap(root_out + '.a')
+    # generate_colormap(root_out + '.b')
+

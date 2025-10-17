@@ -9,8 +9,8 @@ scratch:
   num_notions: 1
   num_tokens_per_notion: 4
   max_num_cls: 4
-  base_lr: 1.0e-5
-  vision_lr: 1.0e-5
+  base_lr: 5.0e-5
+  vision_lr: 5.0e-5
   phases_per_epoch: 1
   num_iterations: 40000
   num_epochs: 800
@@ -104,7 +104,7 @@ trainer:
     # input image resolution
     image_size: ${scratch.resolution}
     # dora rank for image encoder, dora_rank=0 means no dora
-    dora_rank: 16
+    dora_rank: 8
     # number of notions == number of masks predicted for each target image
     num_notions: ${scratch.num_notions}
     # number of tokens per notion
@@ -117,6 +117,10 @@ trainer:
     pred_obj_scores: true
     # Whether to use an MLP to predict object scores
     pred_obj_scores_mlp: true
+    # Whether to use dense prompt embedding
+    use_dense_prompt_embeddings: true
+    # Whether to max pool the dense prompt embeddings before feeding into the mask decoder or after
+    pre_max_pool_dense_prompt: false
 
   data:
     train:
@@ -248,16 +252,16 @@ trainer:
     all:
       _target_: training.loss_fns.MultiStepMultiMasksAndIous
       weight_dict:
-        loss_mask: 20
+        loss_mask: 2
         loss_dice: 1
         loss_iou: 1
-        loss_class: 0.1
+        loss_class: 1
       supervise_all_iou: false
       iou_use_l1_loss: true
       pred_obj_scores: false
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1.0
-      ce_loss: false
+      ce_loss: true
 
   logging:
     tensorboard_writer:

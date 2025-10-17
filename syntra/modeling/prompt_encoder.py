@@ -127,7 +127,7 @@ class PromptEncoder(nn.Module):
         prompt_embeddings = src_emb.unsqueeze(2) * mask_embeddings
         prompt_embeddings = self.merge_image_mask_pair(prompt_embeddings.flatten(0, 2)) # (B*T*N)xCxHxW
         prompt_embeddings = prompt_embeddings.view(B, T, N, self.embed_dim, H, W) # BxTxNxCxHxW
-        dense_embeddings = prompt_embeddings.max(dim=1).values if self.use_dense_embeddings else None # BxNxCxHxW
+        dense_embeddings = prompt_embeddings.permute(0, 2, 1, 3, 4, 5) if self.use_dense_embeddings else None # BxNxTxCxHxW
 
         prompt_embeddings = prompt_embeddings.permute(0, 2, 1, 4, 5, 3) # BxNxTxHxWxC
         prompt_embeddings = prompt_embeddings.flatten(0, 2).flatten(1, 2) # (B*N*T)x(L)xC, L=H*W
@@ -144,7 +144,7 @@ class PromptEncoder(nn.Module):
             pos_emb,
         ) # (B*N*T)xNtxC
 
-        notions = notions.view(B, N, T, self.num_tokens_per_notion, self.embed_dim).flatten(2, 3) # BxNx(T*Nt)xC
+        notions = notions.view(B, N, T, self.num_tokens_per_notion, self.embed_dim) # BxNxTxNtxC
 
         return notions, dense_embeddings
     

@@ -191,7 +191,7 @@ class SingleGPUTrainer:
                 g_pathmgr.copy(self.checkpoint_conf.resume_from, dst)
             
         self.load_checkpoint()
-        
+        print_model_summary(self.model)
 
     def _setup_timers(self):
         """
@@ -252,7 +252,6 @@ class SingleGPUTrainer:
 
         self.logger = Logger(self.logging_conf)
         self.model = instantiate(self.model_conf, _convert_="all")
-        print_model_summary(self.model)
 
         self.loss = None
         if self.loss_conf:

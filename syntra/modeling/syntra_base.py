@@ -42,6 +42,8 @@ class SynTraBase(torch.nn.Module):
         # Whether to use self-attention on the key features at the output of the Mask decoder
         self_attention_at_decoder_output: bool = False,
         use_dense_prompt_embeddings: bool = True,
+        # Whether to max pool the dense prompt embeddings before feeding into the mask decoder or after
+        pre_max_pool_dense_prompt: bool = True,
     ):
         super().__init__()
 
@@ -72,6 +74,7 @@ class SynTraBase(torch.nn.Module):
         self.pred_obj_scores = pred_obj_scores
         self.pred_obj_scores_mlp = pred_obj_scores_mlp
         self.self_attend_key_at_output = self_attention_at_decoder_output
+        self.pre_max_pool_dense_prompt = pre_max_pool_dense_prompt
 
         self._build_heads()
 
@@ -116,6 +119,7 @@ class SynTraBase(torch.nn.Module):
             iou_prediction_use_sigmoid=self.iou_prediction_use_sigmoid,
             pred_obj_scores=self.pred_obj_scores,
             pred_obj_scores_mlp=self.pred_obj_scores_mlp,
+            pre_max_pool_dense_prompt=self.pre_max_pool_dense_prompt,
         )
 
     def forward(self, *args, **kwargs):
