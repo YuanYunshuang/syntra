@@ -27,6 +27,7 @@ class MaskDecoder(nn.Module):
         pred_obj_scores_mlp: bool = False,
         use_multimask_token_for_obj_ptr: bool = False,
         pre_max_pool_dense_prompt: bool = True,
+        use_global_tokens_as_dense_prompt_embeddings: bool = False,
     ) -> None:
         """
         Predicts masks given an image and prompt embeddings, using a
@@ -48,6 +49,9 @@ class MaskDecoder(nn.Module):
         self.transformer_dim = transformer_dim
         self.transformer = transformer
         self.pre_max_pool_dense_prompt = pre_max_pool_dense_prompt
+        self.use_global_tokens_as_dense_prompt_embeddings = (
+            use_global_tokens_as_dense_prompt_embeddings
+        )
 
         self.iou_token = nn.Embedding(1, transformer_dim)
         self.num_mask_tokens = 1
@@ -93,6 +97,34 @@ class MaskDecoder(nn.Module):
             self.pred_obj_score_head = nn.Linear(transformer_dim, 1)
             if pred_obj_scores_mlp:
                 self.pred_obj_score_head = MLP(transformer_dim, transformer_dim, 1, 3)
+
+        if self.use_global_tokens_as_dense_prompt_embeddings:
+            # down scale feature map from 24x24 to 1x1
+            embed_dim = transformer_dim
+            self.global_notion_feature_layer = nn.Sequential(
+                nn.Conv2d(embed_dim, embed_dim, kernel_size=2, stride=2),
+                LayerNorm2d(embed_dim),
+                activation(), # 512x12x12
+                nn.Conv2d(embed_dim, embed_dim*2, kernel_size=2, stride=2),
+                LayerNorm2d(embed_dim*2),
+                activation(), # 1024x6x6
+                nn.Conv2d(embed_dim*2, embed_dim*4, kernel_size=2, stride=2),
+                LayerNorm2d(embed_dim*4),
+                activation(), # 1024x3x3
+                nn.Conv2d(embed_dim*4, embed_dim*4, kernel_size=3, stride=3), # 1024x1x1
+            )
+            self.deepen_image_feature = nn.Sequential(
+                nn.Conv2d(embed_dim, embed_dim*2, kernel_size=1),
+                LayerNorm2d(embed_dim*2),
+                activation(),
+                nn.Conv2d(embed_dim*2, embed_dim*4, kernel_size=1),
+            )
+            self.recover_image_feature_depth = nn.Sequential(
+                nn.Conv2d(embed_dim*4, embed_dim*2, kernel_size=1),
+                LayerNorm2d(embed_dim*2),
+                activation(),
+                nn.Conv2d(embed_dim*2, embed_dim, kernel_size=1),
+            )
 
     def forward(
         self,
@@ -186,7 +218,14 @@ class MaskDecoder(nn.Module):
         b, c, h, w = tgt.shape # b=(B*N) or (B*N*T)
 
         if dense_prompt_embeddings is not None:
-            tgt = tgt + dense_prompt_embeddings
+            if self.use_global_tokens_as_dense_prompt_embeddings:
+                # process dense prompt embeddings to get global notion features
+                tgt = self.deepen_image_feature(tgt) # (B*N*T)x(4C)xHxW
+                global_notion_features = self.global_notion_feature_layer(dense_prompt_embeddings) # (B*N*T)x(4C)x1x1
+                tgt = tgt + global_notion_features
+                tgt = self.recover_image_feature_depth(tgt) # (B*N*T)xCxHxW
+            else:
+                tgt = tgt + dense_prompt_embeddings
         # Run the transformer
         hs, tgt = self.transformer(tgt, pos_tgt, tokens)
         iou_token_out = hs[:, s+1, :] # (B*N)x256 or (B*N*T)x256

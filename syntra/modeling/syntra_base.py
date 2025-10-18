@@ -44,6 +44,7 @@ class SynTraBase(torch.nn.Module):
         use_dense_prompt_embeddings: bool = True,
         # Whether to max pool the dense prompt embeddings before feeding into the mask decoder or after
         pre_max_pool_dense_prompt: bool = True,
+        use_global_tokens_as_dense_prompt_embeddings: bool = False,
     ):
         super().__init__()
 
@@ -60,6 +61,9 @@ class SynTraBase(torch.nn.Module):
         self.num_notions = num_notions  # Number of notions
         self.num_tokens_per_notion = num_tokens_per_notion
         self.use_dense_prompt_embeddings = use_dense_prompt_embeddings
+        self.use_global_tokens_as_dense_prompt_embeddings = (
+            use_global_tokens_as_dense_prompt_embeddings
+        )
        
         # Apply sigmoid to the output raw mask logits (to turn them from
         # range (-inf, +inf) to range (0, 1)) before feeding them into the memory encoder
@@ -120,6 +124,7 @@ class SynTraBase(torch.nn.Module):
             pred_obj_scores=self.pred_obj_scores,
             pred_obj_scores_mlp=self.pred_obj_scores_mlp,
             pre_max_pool_dense_prompt=self.pre_max_pool_dense_prompt,
+            use_global_tokens_as_dense_prompt_embeddings=self.use_global_tokens_as_dense_prompt_embeddings,
         )
 
     def forward(self, *args, **kwargs):

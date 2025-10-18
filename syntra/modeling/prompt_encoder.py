@@ -62,7 +62,7 @@ class PromptEncoder(nn.Module):
             ])
         mask_downscaling.append(nn.Conv2d(out_dim, embed_dim, kernel_size=1))
         self.mask_downscaling = nn.Sequential(*mask_downscaling)
-
+        
         self.merge_image_mask_pair = nn.Sequential(
             nn.Conv2d(embed_dim, embed_dim, kernel_size=1),
             LayerNorm2d(embed_dim),
