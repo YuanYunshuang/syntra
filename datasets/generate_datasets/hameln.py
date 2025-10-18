@@ -99,7 +99,7 @@ def encode_labels(boolean_array):
     return encoded_array
 
 
-def generate_hameln_encoded_lbl(output_root, seperate_19xx_20xx=True):
+def generate_hameln_encoded_lbl(output_root, seperate_years=True):
     """
     Generate dataset from Hameln tk_image and label_tif folders.
     Args:
@@ -193,20 +193,20 @@ def generate_hameln_encoded_lbl(output_root, seperate_19xx_20xx=True):
                 Image.fromarray(lblc).save(os.path.join(lbl_dir, f"{filename}.png"))
 
 
-def generate_hameln_rgb_lbl(output_root, seperate_19xx_20xx=True):
+def generate_hameln_rgb_lbl(output_root, seperate_years=True):
     """
     Generate dataset from Hameln tk_image and label_tif folders.
     Args:
         output_root (str): Root directory to save the generated dataset.
-        seperate_19xx_20xx (bool): Whether to separate datasets for 19xx and 20xx tk images. 
-            If set False, datasets will be splited according to the year of tk images.
+        seperate_years (bool): Whether to separate datasets according to their mapping year. 
+            If set False, the datasets will be separated into 19xx and 20xx datasets.
     """
     ROI_min = [7434, 10371]
     ROI_max = [15113, 20459]
     
     tk_image_files = [x for x in os.listdir(os.path.join(data_root_hameln, 'tk_image')) \
                       if x.endswith(".tif") and 'area' not in x]
-    tk_image_files = sorted(tk_image_files)[7:]
+    tk_image_files = sorted(tk_image_files)
     non_tk19xx_area = np.logical_not(read_tiff(os.path.join(data_root_hameln, 'tk_image', 'tk19xx_area.tif')))
     non_tk20xx_area = np.logical_not(read_tiff(os.path.join(data_root_hameln, 'tk_image', 'tk20xx_area.tif')))
     tk_labels = ['wald', 'grünland', 'siedlung', 'fließgewässer', 'stillgewässer']
@@ -214,17 +214,21 @@ def generate_hameln_rgb_lbl(output_root, seperate_19xx_20xx=True):
     for img_file in tk_image_files:
         print(img_file)
         year = img_file.split('.')[0]
+        if year in ['1898', '1960']:
+            continue
         if int(year) < 2000:
             tk_area = non_tk19xx_area
-            dataset_split = "a"
+            dataset_split = year if seperate_years else "a" 
         else:
             tk_area = non_tk20xx_area
-            dataset_split = "b"
+            dataset_split = year if seperate_years else "b"
+        
         # create output folders
         img_dir = os.path.join(output_root, f'hameln.{dataset_split}', 'imgs')
         lbl_dir = os.path.join(output_root, f'hameln.{dataset_split}', 'lbls')
         os.makedirs(img_dir, exist_ok=True)
         os.makedirs(lbl_dir, exist_ok=True)
+        generate_colormap(os.path.join(output_root, f'hameln.{dataset_split}'))
 
         tk_img = read_tiff(os.path.join(data_root_hameln, 'tk_image', img_file))
         # make sure 3 channels for tk_img
@@ -258,6 +262,9 @@ def generate_hameln_rgb_lbl(output_root, seperate_19xx_20xx=True):
             lbl_mask = lbl_mask[min_x:max_x, min_y:max_y]
             xs, ys = np.where(lbl_mask==1)
             all_labels[xs, ys] = i + 1
+
+            del lbl_mask
+            
         # merge llb=5 and lbl=4 (stillgewässer and fließgewässer into wasser)
         all_labels[all_labels == 5] = 4
         # convert to rgb label
@@ -268,7 +275,7 @@ def generate_hameln_rgb_lbl(output_root, seperate_19xx_20xx=True):
         for x in range(0, max_x - min_x, train_img_size):
             for y in range(0, max_y - min_y, train_img_size):
                 # naming accordint to the original tk_image coordinates before cropping
-                filename = f"{year}_{x + min_x}_{y + min_y}"
+                filename = f"{x + min_x}_{y + min_y}" if seperate_years else f"{year}_{x + min_x}_{y + min_y}"
                 if x + train_img_size <= tk_img.shape[0] and y + train_img_size <= tk_img.shape[1]:
                     imgc = tk_img[x:x+train_img_size, y:y+train_img_size]
                     lblc = all_labels_color[x:x+train_img_size, y:y+train_img_size]
@@ -471,11 +478,10 @@ def visualize_selected_samples(selected_samples, root_dir):
 
 
 if __name__ == "__main__":
-    data_root = f"/home/yuan/data/HisMap/syntra{train_img_size}"
+    seperate_years = True
+    data_root = f"/home/yuan/data/HisMap/syntra{train_img_size}" + f"{'_sheets' if seperate_years else ''}"
+    generate_hameln_rgb_lbl(data_root, seperate_years=seperate_years)
 
-    # generate_hameln_rgb_lbl(data_root)
-    generate_colormap(os.path.join(data_root, 'hameln.a'))
-    generate_colormap(os.path.join(data_root, 'hameln.b'))
 
 
 

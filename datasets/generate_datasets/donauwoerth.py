@@ -101,6 +101,7 @@ def conver_rgb_channels(root_out):
 
 if __name__ == "__main__":
     root_out = "/home/yuan/data/HisMap/syntra384/donauwoerth"
+    # split plan A
     # sheet in year 1959 has very different styles than other sheets, split it into a new dataset
     # list_a = [x for x in os.listdir(os.path.join(data_root_in, "maps")) if not '1959' in x]
     # list_b = [x for x in os.listdir(os.path.join(data_root_in, "maps")) if '1959' in x]
@@ -108,4 +109,19 @@ if __name__ == "__main__":
     # generate_donauwoerth(data_root_in, root_out + '.b', sheet_list=list_b)
     # generate_colormap(root_out + '.a')
     # generate_colormap(root_out + '.b')
+
+    # split plan B
+    lists = os.listdir(os.path.join(data_root_in, "maps"))
+    lists.sort()
+    datasets = {}
+    for l in lists:
+        year = l.split('.')[0].split('_')[-1]
+        if not year in datasets:
+            datasets[year] = []
+        datasets[year].append(l)
+    
+    for d, files in datasets.items():
+        sub_root_out = os.path.join(root_out, d)
+        generate_donauwoerth(data_root_in, sub_root_out, sheet_list=files)
+        generate_colormap(sub_root_out)
 
