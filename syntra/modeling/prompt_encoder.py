@@ -70,7 +70,9 @@ class PromptEncoder(nn.Module):
             nn.Conv2d(embed_dim, embed_dim, kernel_size=1),
         )
 
-        self.notion_attention = notion_attention
+        self.notion_attention = None
+        if num_tokens_per_notion > 0:
+          self.notion_attention = notion_attention
 
     def get_dense_pe(self) -> torch.Tensor:
         """
@@ -135,6 +137,9 @@ class PromptEncoder(nn.Module):
         # process notion embeddings with notion attention
         # Nt, C -> 1xNtxC -> (B*N*T)xNtxC
         notion_embeddings = self.notion_embeddings.weight.unsqueeze(0).repeat(B*N*T, 1, 1)
+        if self.num_tokens_per_notion == 0:
+            return notion_embeddings.view(B, N, T, 0, self.embed_dim), dense_embeddings
+        
         # 1xCxHxW -> (B*N*T)x(L)xC, L=H*W
         pos_emb = self.get_dense_pe().flatten(2).permute(0, 2, 1)
         pos_emb = pos_emb.repeat(B*N*T, 1, 1)

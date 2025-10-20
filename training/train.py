@@ -17,6 +17,7 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from training.utils.train_utils import makedir, register_omegaconf_resolvers
+from training.utils.debug_utils import *
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 

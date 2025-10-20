@@ -228,8 +228,8 @@ class MaskDecoder(nn.Module):
                 tgt = tgt + dense_prompt_embeddings
         # Run the transformer
         hs, tgt = self.transformer(tgt, pos_tgt, tokens)
-        iou_token_out = hs[:, s+1, :] # (B*N)x256 or (B*N*T)x256
-        mask_token_out = hs[:, s+2, :] # (B*N)x256 or (B*N*T)x256
+        iou_token_out = hs[:, s, :] # (B*N)x256 or (B*N*T)x256
+        mask_token_out = hs[:, s+1, :] # (B*N)x256 or (B*N*T)x256
 
         # Upscale mask embeddings and predict masks using the mask tokens
         tgt = tgt.transpose(1, 2).view(b, c, h, w) # bx(HW)xC -> bxCxHxW
