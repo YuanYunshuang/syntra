@@ -153,7 +153,7 @@ class SynTraBase(torch.nn.Module):
 
     def _forward_heads(self, tgt_features, tgt_pos_embeds, 
                        src_features, src_pos_embeds, src_mask, 
-                       high_res_features=None):
+                       high_res_features=None, **kwargs):
         # embed prompt image-label paris
         notions, dense_prompt_embeddings = self.prompt_encoder(
             src_features, src_pos_embeds, src_mask
@@ -164,7 +164,7 @@ class SynTraBase(torch.nn.Module):
             tgt_features, tgt_pos, notions, dense_prompt_embeddings, high_res_features
         )
         outdict = self._construct_outdict(res)
-        if self.refine_masks:
+        if self.refine_masks and kwargs.get("epoch", 0) > 200:
             low_res_masks = res[0]
             refined_res = self.mask_refine_decoder(
                 tgt_features, tgt_pos, low_res_masks, high_res_features

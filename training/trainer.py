@@ -452,7 +452,7 @@ class SingleGPUTrainer:
         phase: str,
     ):
 
-        outputs = model(batch)
+        outputs = model(batch, epoch=self.epoch, phase=phase)
         targets = batch.tgt_mask_batch
         batch_size = len(batch.img_batch)
 

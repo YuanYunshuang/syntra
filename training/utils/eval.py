@@ -130,15 +130,17 @@ class GlobalEvaluator:
                 sumarized_results[main_dataname][cls_name] += evaluator
                 overall_results += evaluator
         # Sumarize subdatasets
-        self.logger.write(f"Summarized Results for dataset: {main_dataname}\n")
-        for cls_name, evaluator in sumarized_results[main_dataname].items():
-            iou, prec, rec, acc = evaluator.eval()
-            self.logger.write(f"  [SUM] Class: {cls_name} - IoU: {iou:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}, Accuracy: {acc:.4f}\n")
-        
+        self.logger.write(f"\n")
+        for dataset, data_res in sumarized_results.items():
+            self.logger.write(f"Summarized Results for dataset: {dataset}\n")
+            for cls_name, evaluator in data_res.items():
+                iou, prec, rec, acc = evaluator.eval()
+                self.logger.write(f"  [SUM] Class: {cls_name} - IoU: {iou:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}, Accuracy: {acc:.4f}\n")
+            
         # Overall results
         iou, prec, rec, acc = overall_results.eval()
         self.logger.write(f"Overall Results across all datasets - IoU: {iou:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}, Accuracy: {acc:.4f}\n")
-    
+        return iou, prec, rec, acc
 
 class Evaluator:
     def __init__(self):

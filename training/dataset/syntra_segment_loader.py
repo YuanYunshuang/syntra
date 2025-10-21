@@ -20,87 +20,54 @@ except:
     pass
 
 
-class JSONSegmentLoader:
-    def __init__(self, video_json_path, ann_every=1, frames_fps=24, valid_obj_ids=None):
-        # Annotations in the json are provided every ann_every th frame
-        self.ann_every = ann_every
-        # Ids of the objects to consider when sampling this video
-        self.valid_obj_ids = valid_obj_ids
-        with open(video_json_path, "r") as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                self.frame_annots = data
-            elif isinstance(data, dict):
-                masklet_field_name = "masklet" if "masklet" in data else "masks"
-                self.frame_annots = data[masklet_field_name]
-                if "fps" in data:
-                    if isinstance(data["fps"], list):
-                        annotations_fps = int(data["fps"][0])
-                    else:
-                        annotations_fps = int(data["fps"])
-                    assert frames_fps % annotations_fps == 0
-                    self.ann_every = frames_fps // annotations_fps
-            else:
-                raise NotImplementedError
-
-    def load(self, frame_id, obj_ids=None):
-        assert frame_id % self.ann_every == 0
-        rle_mask = self.frame_annots[frame_id // self.ann_every]
-
-        valid_objs_ids = set(range(len(rle_mask)))
-        if self.valid_obj_ids is not None:
-            # Remove the masklets that have been filtered out for this video
-            valid_objs_ids &= set(self.valid_obj_ids)
-        if obj_ids is not None:
-            # Only keep the objects that have been sampled
-            valid_objs_ids &= set(obj_ids)
-        valid_objs_ids = sorted(list(valid_objs_ids))
-
-        # Construct rle_masks_filtered that only contains the rle masks we are interested in
-        id_2_idx = {}
-        rle_mask_filtered = []
-        for obj_id in valid_objs_ids:
-            if rle_mask[obj_id] is not None:
-                id_2_idx[obj_id] = len(rle_mask_filtered)
-                rle_mask_filtered.append(rle_mask[obj_id])
-            else:
-                id_2_idx[obj_id] = None
-
-        # Decode the masks
-        raw_segments = torch.from_numpy(mask_utils.decode(rle_mask_filtered)).permute(
-            2, 0, 1
-        )  # （num_obj, h, w）
-        segments = {}
-        for obj_id in valid_objs_ids:
-            if id_2_idx[obj_id] is None:
-                segments[obj_id] = None
-            else:
-                idx = id_2_idx[obj_id]
-                segments[obj_id] = raw_segments[idx]
-        return segments
-
-    def get_valid_obj_frames_ids(self, num_frames_min=None):
-        # For each object, find all the frames with a valid (not None) mask
-        num_objects = len(self.frame_annots[0])
-
-        # The result dict associates each obj_id with the id of its valid frames
-        res = {obj_id: [] for obj_id in range(num_objects)}
-
-        for annot_idx, annot in enumerate(self.frame_annots):
-            for obj_id in range(num_objects):
-                if annot[obj_id] is not None:
-                    res[obj_id].append(int(annot_idx * self.ann_every))
-
-        if num_frames_min is not None:
-            # Remove masklets that have less than num_frames_min valid masks
-            for obj_id, valid_frames in list(res.items()):
-                if len(valid_frames) < num_frames_min:
-                    res.pop(obj_id)
-
-        return res
-
-
 class SynTraSegmentLoader:
+    def __init__(self, lbl_dir):
+        """
+        SegmentLoader for datasets with masks stored as palettised PNGs.
+        """
+        self.lbl_dir = lbl_dir
+
+    def load(self, frame_id):
+        """
+        load the single palettised mask from the disk (path: f'{self.video_png_root}/{frame_id:05d}.png')
+        Args:
+            frame_id: int, define the mask path
+        Return:
+            binary_segments: dict
+        """
+        # check the path
+        mask_path = os.path.join(
+            self.lbl_dir, f"{frame_id.rsplit('.', 1)[1]}.png"
+        )
+        assert os.path.exists(mask_path), f"Mask path {mask_path} doesn't exist!"
+
+        # load the mask
+        masks = PILImage.open(mask_path).convert("P", dither=PILImage.NONE) # use dither to make sure the colors are uniquelly mapped to ids
+        palette = masks.getpalette()
+        masks = np.array(masks)
+
+        cls_ids = pd.unique(masks.flatten())
+        cls_ids = cls_ids[cls_ids != 0]  # remove background (0)
+
+        # palette of PIL does not always map the same color to the same id,
+        # so we need to get mapping from cls id to original colors to track 
+        # the corresponding classes in different frames (source images and target image)
+        colors = [tuple(palette[i:i+3]) for i in range(0, len(palette), 3)]
+        cls_id_to_color = {cls_id: colors[cls_id] for cls_id in cls_ids}
+
+        # convert into N binary segmentation masks
+        binary_segments = {}
+        for i in cls_ids:
+            bs = masks == i
+            binary_segments[i] = torch.from_numpy(bs)
+
+        return binary_segments, cls_id_to_color
+
+    def __len__(self):
+        return
+    
+
+class SynTraSegmentTestLoader:
     def __init__(self, lbl_dir):
         """
         SegmentLoader for datasets with masks stored as palettised PNGs.

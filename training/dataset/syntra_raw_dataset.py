@@ -21,10 +21,7 @@ from iopath.common.file_io import g_pathmgr
 from omegaconf.listconfig import ListConfig
 
 from training.dataset.syntra_segment_loader import (
-    JSONSegmentLoader,
-    MultiplePNGSegmentLoader,
     SynTraSegmentLoader,
-    SA1BSegmentLoader,
 )
 
 

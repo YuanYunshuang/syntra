@@ -101,6 +101,7 @@ trainer:
         downsample_rate: 1
         dropout: 0.1
         kv_in_dim: 256
+    freeze_image_encoder: false
     # input image resolution
     image_size: ${scratch.resolution}
     # dora rank for image encoder, dora_rank=0 means no dora

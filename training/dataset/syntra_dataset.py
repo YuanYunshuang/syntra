@@ -18,7 +18,6 @@ from torchvision.datasets.vision import VisionDataset
 
 from training.dataset.syntra_raw_dataset import SynTraRawDataset
 from training.dataset.syntra_sampler import SynTraSampler
-from training.dataset.syntra_segment_loader import JSONSegmentLoader
 
 from training.utils.data_utils import Frame, Notion, SrcTgtDatapoint
 

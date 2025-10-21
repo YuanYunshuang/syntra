@@ -61,7 +61,7 @@ class SynTraTrain(SynTraBase):
                          f"Total: {total_params}, " + 
                          f"Ratio: {num_trainable_params / total_params * 100: .02f}%.")
 
-    def forward(self, input: BatchedSrcTgtDatapoint):
+    def forward(self, input: BatchedSrcTgtDatapoint, **kwargs):
         # precompute image features on all frames 
         backbone_out = self.forward_image(input.img_batch)
         
@@ -77,7 +77,8 @@ class SynTraTrain(SynTraBase):
             tgt_features, tgt_pos_embeds, 
             src_features, src_pos_embeds, 
             input.src_mask_batch.float(),
-            high_res_features
+            high_res_features,
+            **kwargs
         )
 
         self.visual_dict = {
