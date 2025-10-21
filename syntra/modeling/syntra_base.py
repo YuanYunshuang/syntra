@@ -128,23 +128,23 @@ class SynTraBase(torch.nn.Module):
             pre_max_pool_dense_prompt=self.pre_max_pool_dense_prompt,
             use_global_tokens_as_dense_prompt_embeddings=self.use_global_tokens_as_dense_prompt_embeddings,
         )
-
-        self.mask_refine_decoder = MaskRefineDecoder(
-            transformer=TwoWayTransformer(
-                depth=2,
-                embedding_dim=self.hidden_dim,
-                mlp_dim=2048,
-                num_heads=8,
-                self_attend_key_at_output=self.self_attend_key_at_output,
-            ),
-            transformer_dim=self.hidden_dim,
-            iou_head_depth=3,
-            iou_head_hidden_dim=256,
-            use_high_res_features=self.use_high_res_features,
-            iou_prediction_use_sigmoid=self.iou_prediction_use_sigmoid,
-            pred_obj_scores=self.pred_obj_scores,
-            pred_obj_scores_mlp=self.pred_obj_scores_mlp,
-        )
+        if self.refine_masks:
+            self.mask_refine_decoder = MaskRefineDecoder(
+                transformer=TwoWayTransformer(
+                    depth=2,
+                    embedding_dim=self.hidden_dim,
+                    mlp_dim=2048,
+                    num_heads=8,
+                    self_attend_key_at_output=self.self_attend_key_at_output,
+                ),
+                transformer_dim=self.hidden_dim,
+                iou_head_depth=3,
+                iou_head_hidden_dim=256,
+                use_high_res_features=self.use_high_res_features,
+                iou_prediction_use_sigmoid=self.iou_prediction_use_sigmoid,
+                pred_obj_scores=self.pred_obj_scores,
+                pred_obj_scores_mlp=self.pred_obj_scores_mlp,
+            )
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError(
