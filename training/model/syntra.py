@@ -82,7 +82,8 @@ class SynTraTrain(SynTraBase):
 
         self.visual_dict = {
             "img": input.img_batch,
-            "pred_masks": output_dict["pred_masks"],
+            "pred_masks": output_dict["pred_masks_high_res"],
+            "refined_pred_masks": output_dict.get("refined_pred_masks_high_res", None),
             "pred_ious": output_dict["pred_ious"],
             "src_mask": input.src_mask_batch,
             "tgt_mask": input.tgt_mask_batch,
@@ -127,7 +128,7 @@ class SynTraTrain(SynTraBase):
         batch_idx = random.randint(0, len(self.visual_dict["img"]) - 1)
         imgs = self.visual_dict["img"][batch_idx] # (T, 3, H, W)
         gt_masks = self.visual_dict["tgt_mask"][batch_idx] # (N, H, W)
-        pred_masks = self.visual_dict["pred_masks"][batch_idx] # (N, H, W)
+        pred_masks = self.visual_dict["pred_masks"][batch_idx].sigmoid() # (N, H, W)
         # pred_ious = self.visual_dict["pred_ious"][0] # (T)
         src_mask = self.visual_dict["src_mask"][batch_idx] # (T-1, N, H, W)
         masks = torch.cat([gt_masks.unsqueeze(0), src_mask], dim=0) # (T, N, H, W)
@@ -136,13 +137,6 @@ class SynTraTrain(SynTraBase):
         mean = torch.tensor([0.485, 0.456, 0.406], device=imgs.device).view(1, 3, 1, 1)
         std = torch.tensor([0.229, 0.224, 0.225], device=imgs.device).view(1, 3, 1, 1)
         imgs = imgs * std + mean
-
-        # pred_masks = (pred_masks - pred_masks.min()) / (pred_masks.max() - pred_masks.min() + 1e-6)
-        pred_masks = torch.nn.functional.interpolate(
-            pred_masks.unsqueeze(0), scale_factor=4, mode="bilinear", align_corners=False
-        ).squeeze(0)
-        # normalize the predicted masks to [0, 1] and upscale to the half input image size
-        pred_masks = pred_masks.sigmoid()
 
         logger.log_images(
             f"visual/input", imgs[:, :, ::2, ::2], global_step, dataformats="NCHW"
@@ -159,5 +153,13 @@ class SynTraTrain(SynTraBase):
         logger.log_images(
             f"visual/all_targets", self.visual_dict["img"][:, 0, :, ::2, ::2], global_step, dataformats="NCHW"
         )
+
+        refined_pred_masks = self.visual_dict.get("refined_pred_masks", None)
+        if refined_pred_masks is not None:
+            refined_pred_masks = refined_pred_masks[batch_idx].sigmoid()
+            for i in range(self.num_notions):
+                logger.log_images(
+                    f"visual/refined_pred/notion_{i}", refined_pred_masks[i:i+1, ::2, ::2], global_step, dataformats="CHW"
+                )
 
 

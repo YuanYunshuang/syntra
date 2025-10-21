@@ -203,7 +203,7 @@ class IndexDatabase:
             image = BaseDataset("", []).preprocess(image).unsqueeze(0).cuda()
             emb_dict = self.img_encoder.generate_embedding(image)
             cls_token = emb_dict['x_norm_clstoken']  # (1, C)
-        distances, indices = faiss_index.search(cls_token, k=k)
+        distances, indices = faiss_index.search(cls_token, k=min(k, len(faiss_index)))
         return distances[0], indices[0]
     
     def external_search(self, dataset, query_img_path, k=4):

@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from torch.nn.init import trunc_normal_
 
-from syntra.modeling.mask_decoder import MaskDecoder
+from syntra.modeling.mask_decoder import MaskDecoder, MaskRefineDecoder
 from syntra.modeling.mask_decoder_v2 import MaskDecoder as MaskDecoderV2
 from syntra.modeling.prompt_encoder import PromptEncoder
 from syntra.modeling.transformer import TwoWayTransformer
@@ -45,6 +45,7 @@ class SynTraBase(torch.nn.Module):
         # Whether to max pool the dense prompt embeddings before feeding into the mask decoder or after
         pre_max_pool_dense_prompt: bool = True,
         use_global_tokens_as_dense_prompt_embeddings: bool = False,
+        refine_masks: bool = False,
     ):
         super().__init__()
 
@@ -79,6 +80,7 @@ class SynTraBase(torch.nn.Module):
         self.pred_obj_scores_mlp = pred_obj_scores_mlp
         self.self_attend_key_at_output = self_attention_at_decoder_output
         self.pre_max_pool_dense_prompt = pre_max_pool_dense_prompt
+        self.refine_masks = refine_masks
 
         self._build_heads()
 
@@ -127,6 +129,23 @@ class SynTraBase(torch.nn.Module):
             use_global_tokens_as_dense_prompt_embeddings=self.use_global_tokens_as_dense_prompt_embeddings,
         )
 
+        self.mask_refine_decoder = MaskRefineDecoder(
+            transformer=TwoWayTransformer(
+                depth=2,
+                embedding_dim=self.hidden_dim,
+                mlp_dim=2048,
+                num_heads=8,
+                self_attend_key_at_output=self.self_attend_key_at_output,
+            ),
+            transformer_dim=self.hidden_dim,
+            iou_head_depth=3,
+            iou_head_hidden_dim=256,
+            use_high_res_features=self.use_high_res_features,
+            iou_prediction_use_sigmoid=self.iou_prediction_use_sigmoid,
+            pred_obj_scores=self.pred_obj_scores,
+            pred_obj_scores_mlp=self.pred_obj_scores_mlp,
+        )
+
     def forward(self, *args, **kwargs):
         raise NotImplementedError(
             "Please define the forward method in the subclass."
@@ -141,9 +160,22 @@ class SynTraBase(torch.nn.Module):
         ) # B x N_notion x N_token x C
         tgt_pos = self.prompt_encoder.get_dense_pe()
         # Cross attention between tgt features and notion embeddings
-        low_res_masks, iou_pred, mask_tokens_out, object_score_logits = self.mask_decoder(
+        res = self.mask_decoder(
             tgt_features, tgt_pos, notions, dense_prompt_embeddings, high_res_features
         )
+        outdict = self._construct_outdict(res)
+        if self.refine_masks:
+            low_res_masks = res[0]
+            refined_res = self.mask_refine_decoder(
+                tgt_features, tgt_pos, low_res_masks, high_res_features
+            )
+            outdict.update(self._construct_outdict(refined_res, is_refined=True))
+
+        return outdict
+
+    
+    def _construct_outdict(self, res, is_refined=False):
+        low_res_masks, iou_pred, mask_tokens_out, object_score_logits = res
         # if self.pred_obj_scores:
         #     is_obj_appearing = object_score_logits > 0 # BxN
 
@@ -165,12 +197,16 @@ class SynTraBase(torch.nn.Module):
             align_corners=False,
         )
 
-        return {
+        out_dict = {
             "pred_masks": low_res_masks,
             "pred_masks_high_res": high_res_masks,
             "pred_ious": iou_pred,
             "object_score_logits": object_score_logits,
         }
+        if is_refined:
+            out_dict = {"refined_" + k: v for k, v in out_dict.items()}
+
+        return out_dict
 
     def _use_mask_as_output(self, backbone_features, high_res_features, mask_inputs):
         """

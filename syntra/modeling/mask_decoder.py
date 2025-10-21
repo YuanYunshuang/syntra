@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from typing import List, Optional, Tuple, Type
+from copy import deepcopy
 
 import torch
 from torch import nn
@@ -98,34 +99,6 @@ class MaskDecoder(nn.Module):
             if pred_obj_scores_mlp:
                 self.pred_obj_score_head = MLP(transformer_dim, transformer_dim, 1, 3)
 
-        if self.use_global_tokens_as_dense_prompt_embeddings:
-            # down scale feature map from 24x24 to 1x1
-            embed_dim = transformer_dim
-            self.global_notion_feature_layer = nn.Sequential(
-                nn.Conv2d(embed_dim, embed_dim, kernel_size=2, stride=2),
-                LayerNorm2d(embed_dim),
-                activation(), # 512x12x12
-                nn.Conv2d(embed_dim, embed_dim*2, kernel_size=2, stride=2),
-                LayerNorm2d(embed_dim*2),
-                activation(), # 1024x6x6
-                nn.Conv2d(embed_dim*2, embed_dim*4, kernel_size=2, stride=2),
-                LayerNorm2d(embed_dim*4),
-                activation(), # 1024x3x3
-                nn.Conv2d(embed_dim*4, embed_dim*4, kernel_size=3, stride=3), # 1024x1x1
-            )
-            self.deepen_image_feature = nn.Sequential(
-                nn.Conv2d(embed_dim, embed_dim*2, kernel_size=1),
-                LayerNorm2d(embed_dim*2),
-                activation(),
-                nn.Conv2d(embed_dim*2, embed_dim*4, kernel_size=1),
-            )
-            self.recover_image_feature_depth = nn.Sequential(
-                nn.Conv2d(embed_dim*4, embed_dim*2, kernel_size=1),
-                LayerNorm2d(embed_dim*2),
-                activation(),
-                nn.Conv2d(embed_dim*2, embed_dim, kernel_size=1),
-            )
-
     def forward(
         self,
         image_embeddings: torch.Tensor,
@@ -174,37 +147,21 @@ class MaskDecoder(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predicts masks. See 'forward' for more details."""
         # Concatenate output tokens
-        s = 0
+        
         B, N, T, Nt, C = notion_embeddings.shape # BxNxTxNtxC
-        if self.pred_obj_scores:
-            output_tokens = torch.cat(
-                [
-                    self.obj_score_token.weight, # 1x256
-                    self.iou_token.weight, # 1x256
-                    self.mask_tokens.weight, # 1x256
-                ],
-                dim=0,
-            ) # 3x256
-            s = 1
-        else:
-            output_tokens = torch.cat(
-                [
-                    self.iou_token.weight, # 1x256
-                    self.mask_tokens.weight, # 1x256
-                ], dim=0
-            ) # 2x256
+        output_tokens, s = self._get_output_tokens()
 
         if not self.pre_max_pool_dense_prompt:
-            output_tokens = output_tokens.unsqueeze(0).expand(B*N*T, -1, -1) # (B*N*T)x2x256 or (B*N)xTx3x256
-            tokens = torch.cat((output_tokens, notion_embeddings.flatten(0, 2)), 
-                               dim=1) # (B*N*T)x(2+Nt)x256 or (B*N*T)x(3+Nt)x256
+            tokens = torch.cat((output_tokens.unsqueeze(0).expand(B*N*T, -1, -1), # (B*N*T)x2x256 or (B*N)xTx3x256
+                                notion_embeddings.flatten(0, 2)), 
+                                dim=1) # (B*N*T)x(2+Nt)x256 or (B*N*T)x(3+Nt)x256
             # repeat target image embeddings and pos emb
             tgt = torch.repeat_interleave(image_embeddings.unsqueeze(1), N*T, dim=1).flatten(0, 1) # (B*N*T)xCxHxW
             if dense_prompt_embeddings is not None:
                 dense_prompt_embeddings = dense_prompt_embeddings.flatten(0, 2)  # (B*N*T)xCxHxW
         else:
-            output_tokens = output_tokens.unsqueeze(0).expand(B*N, -1, -1) # (B*N)x2x256 or (B*N)x3x256
-            tokens = torch.cat((output_tokens, notion_embeddings.flatten(0, 1).flatten(1, 2)), 
+            tokens = torch.cat((output_tokens.unsqueeze(0).expand(B*N, -1, -1), # (B*N)x2x256 or (B*N)x3x256
+                                notion_embeddings.flatten(0, 1).flatten(1, 2)), 
                                dim=1) # (B*N)x(2+Nt*T)x256 or (B*N)x(3+Nt*T)x256
             # repeat target image embeddings and pos emb
             tgt = torch.repeat_interleave(image_embeddings.unsqueeze(1), N, dim=1).flatten(0, 1) # (B*N)xCxHxW
@@ -228,28 +185,63 @@ class MaskDecoder(nn.Module):
                 tgt = tgt + dense_prompt_embeddings
         # Run the transformer
         hs, tgt = self.transformer(tgt, pos_tgt, tokens)
-        iou_token_out = hs[:, s, :] # (B*N)x256 or (B*N*T)x256
-        mask_token_out = hs[:, s+1, :] # (B*N)x256 or (B*N*T)x256
+
 
         # Upscale mask embeddings and predict masks using the mask tokens
         tgt = tgt.transpose(1, 2).view(b, c, h, w) # bx(HW)xC -> bxCxHxW
 
         # upscaled_embedding = self.output_upscaling(tgt) # bxC'xH'xW'
         if not self.use_high_res_features:
+            upscaled_embedding = self._get_upscaled_embedding(tgt)
+        else:
+            upscaled_embedding = self._get_upscaled_embedding(tgt, high_res_features)
+
+        res = self._generate_output(hs, upscaled_embedding, s, B, N, T)
+
+        return res
+
+    def _get_upscaled_embedding(self, tgt, high_res_features: Optional[List[torch.Tensor]] = None):
+        if high_res_features is None:
             upscaled_embedding = self.output_upscaling(tgt)
         else:
             dc1, ln1, act1, dc2, act2 = self.output_upscaling
             feat_s0, feat_s1 = high_res_features
-            feat_s0 = torch.repeat_interleave(feat_s0.unsqueeze(1), b//B, dim=1).flatten(0, 1) # bxCxHxW
-            feat_s1 = torch.repeat_interleave(feat_s1.unsqueeze(1), b//B, dim=1).flatten(0, 1)
+            repeat_n = tgt.size(0) // feat_s0.size(0)
+            feat_s0 = torch.repeat_interleave(feat_s0.unsqueeze(1), repeat_n, dim=1).flatten(0, 1) # bxCxHxW
+            feat_s1 = torch.repeat_interleave(feat_s1.unsqueeze(1), repeat_n, dim=1).flatten(0, 1)
             upscaled_embedding = act1(ln1(dc1(tgt) + feat_s1))
             upscaled_embedding = act2(dc2(upscaled_embedding) + feat_s0)
+        return upscaled_embedding
+    
+    def _get_output_tokens(self):
+        s = 0
+        if self.pred_obj_scores:
+            output_tokens = torch.cat(
+                [
+                    self.obj_score_token.weight, # 1x256
+                    self.iou_token.weight, # 1x256
+                    self.mask_tokens.weight, # 1x256
+                ],
+                dim=0,
+            ) # 3x256
+            s = 1
+        else:
+            output_tokens = torch.cat(
+                [
+                    self.iou_token.weight, # 1x256
+                    self.mask_tokens.weight, # 1x256
+                ], dim=0
+            ) # 2x256
+        return output_tokens, s
+    
+    def _generate_output(self, hs, upscaled_embedding, s, B, N, T):
+        iou_token_out = hs[:, s, :] # (B*N)x256 or (B*N*T)x256
+        mask_token_out = hs[:, s+1, :] # (B*N)x256 or (B*N*T)x256
 
         hyper_in = self.output_hypernetworks_mlp(mask_token_out).unsqueeze(1) # bx1x32
         b, c, h, w = upscaled_embedding.shape
         # bx1x32 @ bx32x(HW) -> bx1x(HW) -> BxNxHxW
         masks = (hyper_in @ upscaled_embedding.view(b, c, h * w))
-
         # Generate mask quality predictions
         iou_pred = self.iou_prediction_head(iou_token_out)
         if self.pred_obj_scores:
@@ -267,7 +259,95 @@ class MaskDecoder(nn.Module):
             masks = masks.view(B, N, T, h, w).max(dim=2).values # BxNxHxW   
             iou_pred = iou_pred.view(B, N, T).max(dim=2).values # BxN
             object_score_logits = object_score_logits.view(B, N, T).max(dim=2).values # BxN
-
+        
         return masks, iou_pred, mask_token_out, object_score_logits
 
 
+
+class MaskRefineDecoder(MaskDecoder):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        transformer_dim = self.transformer_dim
+        activation = kwargs.get("activation", nn.GELU)
+        self.mask_downscale = nn.Sequential(
+            nn.Conv2d(1, transformer_dim // 8, kernel_size=2, stride=2),
+            LayerNorm2d(transformer_dim // 8),
+            activation(),
+            nn.Conv2d(transformer_dim // 8, transformer_dim, kernel_size=2, stride=2),
+        )
+
+    def forward(
+        self,
+        image_embeddings: torch.Tensor,
+        image_pe: torch.Tensor,
+        masks: torch.Tensor,
+        high_res_features: Optional[List[torch.Tensor]] = None, 
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        dense_prompt_embeddings = self.mask_downscale(masks)  # Bx1xHxW -> BxCxH'xW'
+        masks, iou_pred, mask_tokens_out, object_score_logits = self.predict_masks(
+            image_embeddings=image_embeddings,
+            image_pe=image_pe,
+            dense_prompt_embeddings=dense_prompt_embeddings,
+            high_res_features=high_res_features,
+        )
+
+        return masks, iou_pred, mask_tokens_out, object_score_logits
+    
+    def predict_masks(
+        self,
+        image_embeddings: torch.Tensor, # BxNxCxHxW
+        image_pe: torch.Tensor,
+        dense_prompt_embeddings: Optional[torch.Tensor] = None, # BxNxTxCxHxW
+        high_res_features: Optional[List[torch.Tensor]] = None,
+        ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Predicts masks. See 'forward' for more details."""
+        # Concatenate output tokens
+        B = image_embeddings.size(0)
+        N = dense_prompt_embeddings.size(0) // B
+        output_tokens, s = self._get_output_tokens()
+        tokens = output_tokens.unsqueeze(0).expand(B*N, -1, -1) # (B*N)x2x256 or (B*N)x3x256
+        # repeat target image embeddings and pos emb
+        tgt = torch.repeat_interleave(image_embeddings.unsqueeze(1), N, dim=1).flatten(0, 1) # (B*N)xCxHxW
+        assert (
+            image_pe.size(0) == 1
+        ), "image_pe should have size 1 in batch dim (from `get_dense_pe()`)"       
+        pos_tgt = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0) # (B*N)x256xHxW or (B*N*T)x256xHxW
+        b, c, h, w = tgt.shape # b=(B*N) or (B*N*T)
+
+        tgt = tgt + dense_prompt_embeddings
+        # Run the transformer
+        hs, tgt = self.transformer(tgt, pos_tgt, tokens)
+
+        # Upscale mask embeddings and predict masks using the mask tokens
+        tgt = tgt.transpose(1, 2).view(b, c, h, w) # bx(HW)xC -> bxCxHxW
+
+        # upscaled_embedding = self.output_upscaling(tgt) # bxC'xH'xW'
+        upscaled_embedding = self._get_upscaled_embedding(tgt, high_res_features)
+
+        res = self._generate_output(hs, upscaled_embedding, s, B, N)
+
+        return res
+    
+    def _generate_output(self, hs, upscaled_embedding, s, B, N):
+        iou_token_out = hs[:, s, :] # (B*N)x256 or (B*N*T)x256
+        mask_token_out = hs[:, s+1, :] # (B*N)x256 or (B*N*T)x256
+
+        hyper_in = self.output_hypernetworks_mlp(mask_token_out).unsqueeze(1) # bx1x32
+        b, c, h, w = upscaled_embedding.shape
+        # bx1x32 @ bx32x(HW) -> bx1x(HW) -> BxNxHxW
+        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w))
+
+        # Generate mask quality predictions
+        iou_pred = self.iou_prediction_head(iou_token_out)
+        if self.pred_obj_scores:
+            assert s == 1
+            object_score_logits = self.pred_obj_score_head(hs[:, s, :])
+        else:
+            # Obj scores logits - default to 10.0, i.e. assuming the object is present, sigmoid(10)=1
+            object_score_logits = 10.0 * iou_pred.new_ones(*iou_pred.shape)
+
+        masks = masks.view(B, N, h, w)
+        iou_pred = iou_pred.view(B, N) # BxN
+        object_score_logits = object_score_logits.view(B, N) # BxN
+        
+        return masks, iou_pred, mask_token_out, object_score_logits

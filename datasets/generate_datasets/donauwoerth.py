@@ -21,7 +21,7 @@ colors = [
 (124, 252, 0),    # 'grünland' (grassland): Lawn Green
 (30, 144, 255),   # 'wasser' (water): Dodger Blue
 ]
-semantics = ['forest', 'grass', 'wasser']
+semantics = ['forest', 'grass', 'water']
 
 def generate_colormap(data_root):
     color_map = {}
@@ -97,20 +97,21 @@ def conver_rgb_channels(root_out):
         img = np.array(img)[:, :, ::-1]  # convert RGB to BGR
         img = Image.fromarray(img)
         img.save(os.path.join(root_out + '.b', "imgs", f))
-        
 
-if __name__ == "__main__":
+
+def planA():
     root_out = "/home/yuan/data/HisMap/syntra384/donauwoerth"
-    # split plan A
     # sheet in year 1959 has very different styles than other sheets, split it into a new dataset
-    # list_a = [x for x in os.listdir(os.path.join(data_root_in, "maps")) if not '1959' in x]
-    # list_b = [x for x in os.listdir(os.path.join(data_root_in, "maps")) if '1959' in x]
-    # generate_donauwoerth(data_root_in, root_out + '.a', sheet_list=list_a)
-    # generate_donauwoerth(data_root_in, root_out + '.b', sheet_list=list_b)
-    # generate_colormap(root_out + '.a')
-    # generate_colormap(root_out + '.b')
+    list_a = [x for x in os.listdir(os.path.join(data_root_in, "maps")) if not '1959' in x]
+    list_b = [x for x in os.listdir(os.path.join(data_root_in, "maps")) if '1959' in x]
+    generate_donauwoerth(data_root_in, root_out + '.a', sheet_list=list_a)
+    generate_donauwoerth(data_root_in, root_out + '.b', sheet_list=list_b)
+    generate_colormap(root_out + '.a')
+    generate_colormap(root_out + '.b')
 
-    # split plan B
+
+def planB():
+    root_out = "/home/yuan/data/HisMap/syntra384_sheets/donauwoerth"
     lists = os.listdir(os.path.join(data_root_in, "maps"))
     lists.sort()
     datasets = {}
@@ -121,7 +122,11 @@ if __name__ == "__main__":
         datasets[year].append(l)
     
     for d, files in datasets.items():
-        sub_root_out = os.path.join(root_out, d)
+        sub_root_out = f"{root_out}.{d}" 
         generate_donauwoerth(data_root_in, sub_root_out, sheet_list=files)
         generate_colormap(sub_root_out)
+        
 
+if __name__ == "__main__":
+    
+    planB()

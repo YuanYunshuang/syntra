@@ -50,6 +50,7 @@ class BatchedSrcTgtDatapoint:
     tgt_mask_batch: torch.BoolTensor
     metadata: Optional[BatchedSrcTgtMetaData]
     sample_names: Optional[List[List[str]]]
+    notion_colors: Optional[List[List[Tuple[int, int, int]]]]
 
     dict_key: str
 
@@ -107,6 +108,7 @@ class Notion:
     cls_id: int
     frame_id: str
     segment: Union[torch.Tensor, dict]  # RLE dict or binary mask
+    color: Tuple[int, int, int]
 
 
 @dataclass
@@ -124,6 +126,7 @@ class SrcTgtDatapoint:
     target_id: int
     notion_size: int
     valid_src_notion_ids: List[int]
+    valid_src_notion_colors: List[Tuple[int, int, int]]
     size: Tuple[int, int]
 
 
@@ -181,6 +184,7 @@ def collate_fn(
     tgt_msk_batch = []
     src_msk_batch = []
     names_batch = []
+    notion_colors_batch = []
     for tgt in batch:
         img_batch += [torch.stack([frame.data for frame in tgt.frames], dim=0)]
         names_batch.append([frame.sample_name for frame in tgt.frames])
@@ -190,10 +194,13 @@ def collate_fn(
         notion_idxs = random.sample(range(tgt.notion_size), tgt.notion_size)
         # collect target masks
         tgt_masks = torch.zeros((tgt.notion_size, h, w), dtype=torch.bool)
+        notion_colors = [[0, 0, 0]] * tgt.notion_size
         for n in tgt.frames[0].notions:
             if n.cls_id in valid_notion_ids:
                 tgt_masks[valid_notion_ids.index(n.cls_id)] = n.segment.to(torch.bool)
+                notion_colors[valid_notion_ids.index(n.cls_id)] = list(n.color)
         tgt_msk_batch.append(tgt_masks[notion_idxs])  # shuffle the target masks
+        notion_colors = [notion_colors[i] for i in notion_idxs]
         # collect source masks
         src_masks = torch.zeros((tgt.notion_size, (len(tgt.frames) - 1), h, w), dtype=torch.bool)
         for i, frame in enumerate(tgt.frames[1:]):
@@ -201,6 +208,8 @@ def collate_fn(
                 if n.cls_id in valid_notion_ids:
                     src_masks[valid_notion_ids.index(n.cls_id), i] = n.segment.to(torch.bool)
         src_msk_batch.append(src_masks[notion_idxs].permute(1, 0, 2, 3))  # shuffle the source masks
+        notion_colors_batch.append(notion_colors)
+
 
     img_batch = torch.stack(img_batch, dim=0) # BxTxCxHxW
     tgt_msk_batch = torch.stack(tgt_msk_batch, dim=0) # BxNxHxW
@@ -215,4 +224,5 @@ def collate_fn(
         sample_names=names_batch,
         dict_key=dict_key,
         batch_size=[B],
+        notion_colors=notion_colors_batch,
     )

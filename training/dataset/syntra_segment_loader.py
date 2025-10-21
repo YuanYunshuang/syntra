@@ -122,24 +122,20 @@ class SynTraSegmentLoader:
         assert os.path.exists(mask_path), f"Mask path {mask_path} doesn't exist!"
 
         # load the mask
-        masks = PILImage.open(mask_path).convert("P", dither=PILImage.NONE) # use dither to make sure the colors are uniquelly mapped to ids
-        palette = masks.getpalette()
-        masks = np.array(masks)
+        masks_rgb = np.array(PILImage.open(mask_path))
+        palette = np.unique(masks_rgb.reshape(-1, 3), axis=0)
 
-        cls_ids = pd.unique(masks.flatten())
-        cls_ids = cls_ids[cls_ids != 0]  # remove background (0)
-
-        # palette of PIL does not always map the same color to the same id,
-        # so we need to get mapping from cls id to original colors to track 
-        # the corresponding classes in different frames (source images and target image)
-        colors = [tuple(palette[i:i+3]) for i in range(0, len(palette), 3)]
-        cls_id_to_color = {cls_id: colors[cls_id] for cls_id in cls_ids}
+        # cls_ids = pd.unique(masks.flatten())
+        cls_id_to_color = {np.random.randint(0, 255): color for color in palette if color.sum() != 0}
+        cls_ids = list(cls_id_to_color.keys())
 
         # convert into N binary segmentation masks
         binary_segments = {}
         for i in cls_ids:
-            bs = masks == i
+            bs = (masks_rgb == cls_id_to_color[i].reshape(1, 1, 3)).all(axis=2)
             binary_segments[i] = torch.from_numpy(bs)
+        
+        cls_id_to_color = {i: tuple(cls_id_to_color[i].tolist()) for i in cls_ids}
 
         return binary_segments, cls_id_to_color
 

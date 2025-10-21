@@ -3,7 +3,7 @@
 scratch:
   resolution: 384
   train_batch_size: 8
-  val_batch_size: 64
+  val_batch_size: 8
   num_train_workers: 4
   num_src: 3
   num_notions: 1

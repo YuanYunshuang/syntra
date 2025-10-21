@@ -22,7 +22,7 @@ colors = [
 (220, 20, 60),    # 'siedlung' (settlement): Crimson
 (30, 144, 255),   # 'wasser' (flowing water): Dodger Blue
 ]
-semantics = ['forest', 'grass', 'settlement', 'wasser']
+semantics = ['forest', 'grass', 'settlement', 'water']
 
 def generate_colormap(data_root):
     color_map = {}
@@ -214,7 +214,7 @@ def generate_hameln_rgb_lbl(output_root, seperate_years=True):
     for img_file in tk_image_files:
         print(img_file)
         year = img_file.split('.')[0]
-        if year in ['1898', '1960']:
+        if int(year) < 2000:
             continue
         if int(year) < 2000:
             tk_area = non_tk19xx_area

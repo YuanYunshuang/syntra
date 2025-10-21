@@ -121,6 +121,8 @@ trainer:
     use_dense_prompt_embeddings: true
     # Whether to max pool the dense prompt embeddings before feeding into the mask decoder or after
     pre_max_pool_dense_prompt: false
+    # Whether to refine the masks predicted from the SAM mask decoder with an additional mask refinement module
+    refine_masks: true
 
   data:
     train:

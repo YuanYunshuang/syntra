@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import random
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -14,7 +15,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from torchvision.transforms import ToPILImage
 from hydra.utils import instantiate
 from iopath.common.file_io import g_pathmgr
 
@@ -32,7 +32,7 @@ from training.utils.logger import Logger, setup_logging
 from training.optimizer import construct_optimizer
 from training.utils.data_utils import BatchedSrcTgtDatapoint
 from training.utils.distributed import all_reduce_max, barrier, get_rank
-from training.utils.eval import Evaluator
+from training.utils.eval import GlobalEvaluator
 
 from training.utils.train_utils import (
     AverageMeter,
@@ -134,6 +134,7 @@ class Tester:
         data: Dict[str, Any],
         model: Dict[str, Any] = None,
         optim: Dict[str, Any] = None,
+        evaluator: Dict[str, Any] = None,
         logging: Dict[str, Any] = None,
         checkpoint: Dict[str, Any] = None,
         seed_value: int = 123,
@@ -151,6 +152,7 @@ class Tester:
         self.optim_conf = OptimConf(**optim) if optim is not None else None
         self.meters_conf = meters
         self.loss_conf = loss
+        self.eval_conf = evaluator
 
         self._setup_device()
         makedir(self.logging_conf.log_dir)
@@ -169,8 +171,6 @@ class Tester:
         self.time_elapsed_meter = DurationMeter("Time Elapsed", self.device, ":.2f")
 
         self.load_checkpoint()
-
-        self.evaluator = Evaluator()
         
 
     def _setup_timers(self):
@@ -230,6 +230,8 @@ class Tester:
 
         self.logger = open(os.path.join(self.logging_conf.log_dir, "test_log.txt"), "a") if self.distributed_rank == 0 else None
         makedir(os.path.join(self.logging_conf.log_dir, "test_results"))
+        self.evaluator = instantiate(self.eval_conf, _convert_="all")
+        self.evaluator.set_logger(self.logger)
         self.model = instantiate(self.model_conf, _convert_="all")
 
         self.loss = None
@@ -322,36 +324,6 @@ class Tester:
         for meter in self._get_meters(phases).values():
             meter.reset()
 
-    def _save_test_results(self, input, results):
-        pred_masks = results['pred_masks_high_res'].sigmoid().cpu()
-        gt_masks = torch.cat([input.tgt_mask_batch.unsqueeze(1), input.src_mask_batch], dim=1).cpu()
-        imgs = input.img_batch.cpu()
-        names = input.sample_names
-        B = len(names)
-        T = len(names[0])
-        h, w = imgs.shape[-2:]
-
-        # unnormalize images
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-        imgs = imgs * std + mean
-
-        for b in range(B):
-            cur_names = names[b]
-            dataset_name, filename = cur_names[0].rsplit('.', 1)
-            save_folder = os.path.join(self.logging_conf.log_dir, "test_results", dataset_name)
-            makedir(save_folder)
-            # create image grid 2x(T) with first row being images and second row being gt masks, tgt pred mask is in row 1 col T+1
-            vis_img = torch.zeros((3, h*2, (w + 10)*T + w), dtype=torch.uint8) + 128
-            for t in range(T):
-                img = (imgs[b, t] * 255).byte()
-                vis_img[:, :h, t * (w + 10): t * (w + 10) + w] = img
-                vis_img[:, h:, t * (w + 10): t * (w + 10) + w] = (gt_masks[b, t] * 255).byte().repeat(3, 1, 1)
-            vis_img[:, :h, -w:] = (pred_masks[b] * 255).byte().repeat(3, 1, 1)
-            vis_img[:, h:, -w:] = ((pred_masks[b] > 0.5).int() * 255).byte().repeat(3, 1, 1)
-            ToPILImage()(vis_img).save(os.path.join(save_folder, f"{filename}.png"))
-
-
     def _step(
         self,
         batch: BatchedSrcTgtDatapoint,
@@ -363,8 +335,7 @@ class Tester:
         targets = batch.tgt_mask_batch
         batch_size = len(batch.img_batch)
 
-        self._save_test_results(batch, outputs)
-        self.evaluator.add_sample(outputs['pred_masks_high_res'], targets)
+        self.evaluator.add_samples(batch, outputs['pred_masks_high_res'])
 
         key = batch.dict_key  # key for dataset
         loss = self.loss[key](outputs, targets)
@@ -400,10 +371,6 @@ class Tester:
         outs = self.test_epoch(dataloader, phase=Phase.TEST)
         del dataloader
         gc.collect()
-        self.logger.write(f"Test Results: \n")
-
-        for k, v in outs.items():
-            self.logger.write(f"    {k}: {v*100:.2f}\n")
         self.logger.close()
 
     def test_epoch(self, test_loader, phase):
@@ -441,7 +408,6 @@ class Tester:
         end = time.time()
 
         for data_iter, batch in enumerate(test_loader):
-
             # measure data loading time
             data_time.update(time.time() - end)
 

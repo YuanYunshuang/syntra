@@ -51,6 +51,8 @@ def generate_src_tgt_intra_cls(data_root, nshot, k=8):
 def generate_src_tgt_inter_cls(data_root, mode, k=8, visualize=False):
     img_encoder = DinoV2Encoder()
     for dataset in os.listdir(data_root):
+        if not os.path.isdir(os.path.join(data_root, dataset)):
+            continue
         if "nshot" in mode:
             nshot = int(mode[5:])
             with open(os.path.join(data_root, dataset, f'selected_{nshot}.json'), 'r') as f:
@@ -131,5 +133,5 @@ def visualize_generateion(dataset, pairing_info, mode='inter', n_vis = 5):
 
 
 if __name__=="__main__":
-    data_root = "/home/yuan/data/HisMap/syntra384"
-    generate_src_tgt_inter_cls(data_root, "test", k=8, visualize=False)
+    data_root = "/home/yuan/data/HisMap/syntra384_sheets"
+    generate_src_tgt_inter_cls(data_root, "nshot100", k=8, visualize=False)

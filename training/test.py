@@ -17,6 +17,7 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from training.utils.train_utils import makedir, register_omegaconf_resolvers
+from training.utils.debug_utils import *
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 
@@ -74,6 +75,12 @@ def main(args) -> None:
     cfg.dataset.root = (
         args.data_root if args.data_root is not None else cfg.dataset.root
     )
+    cfg.scratch.num_notions = (
+        args.num_notions if args.num_notions is not None else cfg.scratch.num_notions
+    )
+    cfg.scratch.num_src = (
+        args.num_src if args.num_src is not None else cfg.scratch.num_src
+    )
     
     main_port = random.randint(
             cfg.launcher.port_range[0], cfg.launcher.port_range[1]
@@ -88,7 +95,9 @@ if __name__=="__main__":
                         help="config file path")
     parser.add_argument("-bs", "--batch_size", type=int, default=None, 
                         help="batch size for training")
-    parser.add_argument("-split", "--data_split", type=int, default=None, 
+    parser.add_argument("-nn", "--num_notions", type=int, default=None, 
+                        help="number of samples for fewshot learning")
+    parser.add_argument("-ns", "--num_src", type=int, default=None, 
                         help="number of samples for fewshot learning")
     parser.add_argument("-dr", "--data-root", type=str, default=None, 
                         help="the root directory that contains all datasets")

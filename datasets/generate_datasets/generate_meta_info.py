@@ -101,7 +101,7 @@ def train_test_val_split(root_dir, ratios={'train':0.7, 'test':0.2, 'val': 0.1},
                 f.write("\n")
 
 
-def select_roi_samples(dinfo_file, num_samples_per_cls_per_sheet=1, min_ratio=0.1, max_ratio=0.8, save_path=None):
+def select_roi_samples(dinfo_file, num_samples_per_cls_per_sheet=1, min_ratio=0.1, max_ratio=0.8, plan="A", save_path=None):
     """
     Select regions of interest (ROI) samples for labeling. 
     Normally, for real use case we should select them manually.
@@ -125,10 +125,18 @@ def select_roi_samples(dinfo_file, num_samples_per_cls_per_sheet=1, min_ratio=0.
         train_samples = [line.strip() for line in f.readlines()]
     dinfo = {k: v for k, v in dinfo.items() if k in train_samples}
 
+    def parse_sheet(sample_name):
+        if plan == "A":
+            return sample_name.split('.')[-1].rsplit('_', 2)[0]
+        elif plan == "B":
+            return sample_name.split('.')[1]
+        else:
+            raise ValueError(f"Unknown plan: {plan}")
+
     if 'siegfried' in dinfo_file:
         map_sheets = [os.path.basename(dinfo_file).rsplit('.', 1)[0]]
     else:
-        map_sheets = list(set([x.split('.')[-1].rsplit('_', 2)[0] for x in dinfo.keys()]))
+        map_sheets = list(set([parse_sheet(x) for x in dinfo.keys()]))
 
     # select samples for each class
     fg_classes = [k for k in color_map.keys() if k not in ['background', 'nonlabeled']]
@@ -141,7 +149,7 @@ def select_roi_samples(dinfo_file, num_samples_per_cls_per_sheet=1, min_ratio=0.
                 if 'railway' in sheet:
                     min_ratio = 0.02
             else:
-                samples_in_sheet = {name: info for name, info in dinfo.items() if name.split('.')[-1].rsplit('_', 2)[0] == sheet}
+                samples_in_sheet = {name: info for name, info in dinfo.items() if parse_sheet(name) == sheet}
                 replace = True
             cls_samples_in_ratio_range = [
                 name for name, info in samples_in_sheet.items() 
@@ -217,9 +225,10 @@ def visualize_selected_samples(selected_samples, root_dir):
                 print(f"Image or label file for sample {sample} not found.")
 
 
-def select_fewshot_samples(data_root, dataset_list=None, nshot=10):
+def select_fewshot_samples(data_root, dataset_list=None, nshot=10, plan="A"):
     if dataset_list is None:
         dataset_list = [d for d in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, d))]
+    selected_for_map_collections = {}
     for d in dataset_list:
         print(f"Selecting fewshot samples for: {d}")
         selected_samples = select_roi_samples(
@@ -227,13 +236,32 @@ def select_fewshot_samples(data_root, dataset_list=None, nshot=10):
             num_samples_per_cls_per_sheet=nshot, 
             min_ratio=0.05, 
             max_ratio=0.8, 
+            plan=plan,
             save_path=os.path.join(data_root, d, f"selected_{nshot}.json")
         )
+
+        collection = d.split('.')[0]
+        for k, v in selected_samples.items():
+            if collection not in selected_for_map_collections:
+                selected_for_map_collections[collection] = {}
+            if k not in selected_for_map_collections[collection]:
+                selected_for_map_collections[collection][k] = []
+            selected_for_map_collections[collection][k].extend(v)
         # visualize_selected_samples(selected_samples, os.path.join(data_root, d))
+    # save selected samples for all map collections
+    save_path = os.path.join(data_root, f"nshot{nshot}_summary.txt")
+    for mc, samples in selected_for_map_collections.items():
+        with open(save_path, 'a') as f:
+            f.write(f"########################## Map Collection: {mc} ##########################\n")
+            for cls, s_list in samples.items():
+                f.write(f"Class {cls} (non-repeatitive): {len(set(s_list))} samples\n")
+            total_unique_samples = len(set([s for sl in samples.values() for s in sl]))
+            f.write(f"Total unique samples selected: {total_unique_samples}\n")
+            f.write("\n")
 
 if __name__ == "__main__":
-    data_root = "/home/yuan/data/HisMap/syntra384"
-    dataset_list = None # ['donauwoerth.a', 'donauwoerth.b']
+    data_root = "/home/yuan/data/HisMap/syntra384_sheets"
+    dataset_list = [x for x in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, x))] # ['donauwoerth.a', 'donauwoerth.b']
     # generate_data_info(data_root, dataset_list=dataset_list)
     # train_test_val_split(data_root, dataset_list=dataset_list)
-    select_fewshot_samples(data_root, nshot=100, dataset_list=dataset_list)
+    select_fewshot_samples(data_root, nshot=100, dataset_list=dataset_list, plan="B")

@@ -230,6 +230,23 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self._update_losses(
             losses, pred_masks, target_masks, pred_ious, num_objects, object_score_logits
         )
+
+        if "refined_pred_masks_high_res" in outputs:
+            refined_losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
+            refined_pred_masks = outputs["refined_pred_masks_high_res"]
+            refined_pred_ious = outputs["refined_pred_ious"]
+            refined_object_score_logits = outputs["refined_object_score_logits"]
+            self._update_losses(
+                refined_losses,
+                refined_pred_masks,
+                target_masks,
+                refined_pred_ious,
+                num_objects,
+                refined_object_score_logits,
+            )
+            for k, v in refined_losses.items():
+                losses[k + "_refined"] = v
+
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
 
