@@ -76,5 +76,11 @@ def update_lbl_palette(root_dir):
             new_masks.save(mask_path, format="PNG")
 
 
+def sync_to_koko(local_path, koko_path):
+    cmd = f"rsync -av --progress {local_path}/ {koko_path}/ --exclude '*.DS_Store'"
+    os.system(cmd)
+
+
 if __name__=="__main__":
-    update_lbl_palette('/home/yuan/data/HisMap/syntra384')
+    # update_lbl_palette('/home/yuan/data/HisMap/syntra384_sheets')
+    sync_to_koko('/home/yuan/data/HisMap/syntra384', '/koko/datasets/syntra384')

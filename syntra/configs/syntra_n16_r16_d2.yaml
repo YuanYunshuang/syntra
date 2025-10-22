@@ -2,15 +2,15 @@
 
 scratch:
   resolution: 384
-  train_batch_size: 8
-  val_batch_size: 64
+  train_batch_size: 16
+  val_batch_size: 8
   num_train_workers: 4
   num_src: 3
   num_notions: 1
   num_tokens_per_notion: 16
   max_num_cls: 4
-  base_lr: 5.0e-5
-  vision_lr: 5.0e-5
+  base_lr: 1.0e-4
+  vision_lr: 1.0e-4
   phases_per_epoch: 1
   num_iterations: 40000
   num_epochs: 800
@@ -18,8 +18,10 @@ scratch:
 
 dataset:
   name: SynTra
-  root: /home/yuan/data/HisMap/syntra384
-  split: paring_nshot100_intercls.json
+  root: /home/yuan/data/HisMap/syntra384_sheets
+  train_split: pairing_100_100_intercls.json
+  test_split: pairing_100_test_intercls.json
+  val_split: pairing_100_val_intercls.json
   multiplier: 1
 
 syntra:
@@ -101,10 +103,11 @@ trainer:
         downsample_rate: 1
         dropout: 0.1
         kv_in_dim: 256
+    freeze_image_encoder: true
     # input image resolution
     image_size: ${scratch.resolution}
     # dora rank for image encoder, dora_rank=0 means no dora
-    dora_rank: 8
+    dora_rank: 16
     # number of notions == number of masks predicted for each target image
     num_notions: ${scratch.num_notions}
     # number of tokens per notion
@@ -119,19 +122,21 @@ trainer:
     pred_obj_scores_mlp: true
     # Whether to use dense prompt embedding
     use_dense_prompt_embeddings: true
-    # Whether to use global tokens as dense prompt embeddings
-    use_global_tokens_as_dense_prompt_embeddings: true
     # Whether to max pool the dense prompt embeddings before feeding into the mask decoder or after
     pre_max_pool_dense_prompt: false
+    # Whether to refine the masks predicted from the SAM mask decoder with an additional mask refinement module
+    refine_masks: false
+    freeze_stage1: false
 
   data:
+    meta: ${dataset}
     train:
       _target_: training.dataset.syntra_datasets.TorchTrainMixedDataset
       phases_per_epoch: ${scratch.phases_per_epoch}
       batch_sizes:
         - ${scratch.train_batch_size}
-      auto_parse_datasets: ['donauwoerth.a', 'donauwoerth.b', 'hameln.a', 'hameln.b', 'siegfried.railway', 'siegfried.vineyard'] # all or a list of dataset names 
-      multipliers: [1., 1., 1., 1., 1., 1.] #[1., 2., 0.2, 0.2, 0.16,   1.7]
+      auto_parse_datasets: all # all or a list of dataset names 
+      # multipliers: [1., 1., 1., 1., 1., 1.] #[1., 2., 0.2, 0.2, 0.16,   1.7]
 
       datasets:
         - _target_: training.dataset.utils.RepeatFactorWrapper
@@ -145,7 +150,7 @@ trainer:
               syntra_dataset:
                 _target_: training.dataset.syntra_raw_dataset.PNGRawDataset
                 root_folder: ${dataset.root}
-                data_info_file: ${dataset.split}
+                data_info_file: ${dataset.train_split}
               sampler:
                 _target_: training.dataset.syntra_sampler.RandomUniformSampler
                 num_src: ${scratch.num_src}
@@ -166,8 +171,8 @@ trainer:
       phases_per_epoch: ${scratch.phases_per_epoch}
       batch_sizes:
         - ${scratch.val_batch_size}
-      auto_parse_datasets: ['donauwoerth.a', 'donauwoerth.b', 'hameln.a', 'hameln.b', 'siegfried.railway', 'siegfried.vineyard'] # all or a list of dataset names 
-      multipliers: [1., 1., 1., 1., 1., 1.] #[1., 2., 0.2, 0.2, 0.16,   1.7]
+      auto_parse_datasets: all # all or a list of dataset names 
+      # multipliers: [1., 1., 1., 1., 1., 1.] #[1., 2., 0.2, 0.2, 0.16,   1.7]
 
       datasets:
         - _target_: training.dataset.utils.RepeatFactorWrapper
@@ -181,7 +186,7 @@ trainer:
               syntra_dataset:
                 _target_: training.dataset.syntra_raw_dataset.PNGRawDataset
                 root_folder: ${dataset.root}
-                data_info_file: paring_val_intercls.json
+                data_info_file: ${dataset.val_split}
               sampler:
                 _target_: training.dataset.syntra_sampler.RandomUniformSampler
                 num_src: ${scratch.num_src}
@@ -198,6 +203,7 @@ trainer:
         dict_key: all
   
   optim:
+    reset_epoch_on_load: false
     amp:
       enabled: True
       amp_dtype: bfloat16
@@ -310,3 +316,9 @@ tester:
     log_dir: ${launcher.experiment_log_dir}/logs
 
   checkpoint: ${trainer.checkpoint}
+
+  evaluator:
+    _target_: training.utils.eval.GlobalEvaluator
+    data_root_dir: ${dataset.root}
+    save_results: true
+    results_dir: ${launcher.experiment_log_dir}/test_results

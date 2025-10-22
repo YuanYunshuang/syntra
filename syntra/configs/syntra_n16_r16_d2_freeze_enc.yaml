@@ -2,7 +2,7 @@
 
 scratch:
   resolution: 384
-  train_batch_size: 32
+  train_batch_size: 16
   val_batch_size: 8
   num_train_workers: 4
   num_src: 3
@@ -13,12 +13,12 @@ scratch:
   vision_lr: 1.0e-4
   phases_per_epoch: 1
   num_iterations: 40000
-  num_epochs: 1000
+  num_epochs: 800
   val_epoch_freq: 20
 
 dataset:
   name: SynTra
-  root: /home/yuan/data/HisMap/syntra384
+  root: /home/yuan/data/HisMap/syntra384_sheets
   train_split: pairing_100_100_intercls.json
   test_split: pairing_100_test_intercls.json
   val_split: pairing_100_val_intercls.json
@@ -103,7 +103,7 @@ trainer:
         downsample_rate: 1
         dropout: 0.1
         kv_in_dim: 256
-    freeze_stage1: true
+    freeze_image_encoder: true
     # input image resolution
     image_size: ${scratch.resolution}
     # dora rank for image encoder, dora_rank=0 means no dora
@@ -125,7 +125,8 @@ trainer:
     # Whether to max pool the dense prompt embeddings before feeding into the mask decoder or after
     pre_max_pool_dense_prompt: false
     # Whether to refine the masks predicted from the SAM mask decoder with an additional mask refinement module
-    refine_masks: true
+    refine_masks: false
+    freeze_stage1: false
 
   data:
     meta: ${dataset}
@@ -134,8 +135,8 @@ trainer:
       phases_per_epoch: ${scratch.phases_per_epoch}
       batch_sizes:
         - ${scratch.train_batch_size}
-      auto_parse_datasets: ['donauwoerth.a', 'donauwoerth.b', 'hameln.a', 'hameln.b', 'siegfried.railway', 'siegfried.vineyard'] # all or a list of dataset names 
-      multipliers: [1., 1., 1., 1., 1., 1.] #[1., 2., 0.2, 0.2, 0.16,   1.7]
+      auto_parse_datasets: all # all or a list of dataset names 
+      # multipliers: [1., 1., 1., 1., 1., 1.] #[1., 2., 0.2, 0.2, 0.16,   1.7]
 
       datasets:
         - _target_: training.dataset.utils.RepeatFactorWrapper
@@ -165,7 +166,41 @@ trainer:
         _partial_: true
         dict_key: all
 
-    val: ${trainer.data.train}
+    val:
+      _target_: training.dataset.syntra_datasets.TorchTrainMixedDataset
+      phases_per_epoch: ${scratch.phases_per_epoch}
+      batch_sizes:
+        - ${scratch.val_batch_size}
+      auto_parse_datasets: all # all or a list of dataset names 
+      # multipliers: [1., 1., 1., 1., 1., 1.] #[1., 2., 0.2, 0.2, 0.16,   1.7]
+
+      datasets:
+        - _target_: training.dataset.utils.RepeatFactorWrapper
+          dataset:
+            _target_: training.dataset.utils.ConcatDataset
+            datasets:
+            - _target_: training.dataset.syntra_dataset.SynTraDataset
+              transforms: ${syntra.val_transforms}
+              notion_size: ${scratch.num_notions}
+              training: false
+              syntra_dataset:
+                _target_: training.dataset.syntra_raw_dataset.PNGRawDataset
+                root_folder: ${dataset.root}
+                data_info_file: ${dataset.val_split}
+              sampler:
+                _target_: training.dataset.syntra_sampler.RandomUniformSampler
+                num_src: ${scratch.num_src}
+                max_num_cls: ${scratch.max_num_cls}
+              multiplier: ${dataset.multiplier}
+
+      shuffle: false
+      num_workers: ${scratch.num_train_workers}
+      pin_memory: True
+      drop_last: false
+      collate_fn:
+        _target_: training.utils.data_utils.collate_fn
+        _partial_: true
+        dict_key: all
   
   optim:
     reset_epoch_on_load: false

@@ -133,23 +133,31 @@ class Tester:
 
     def _auto_parse_dataset_cfg(self, phase):
         auto_parse = self.data_conf.get(phase).get("auto_parse_datasets", None)
+        info_file_override = self.data_conf.get("meta", {}).get(f"{phase}_split", None)
+
         if auto_parse is not None:
-            multipliers = self.data_conf.get(phase).get("multipliers", [1.0] * len(auto_parse))
+            if info_file_override is not None:
+                logging.info(f"Overriding {phase} data info_file to {info_file_override}.")
+            
             data_cfg = self.data_conf.get(phase).datasets
             root_folder = data_cfg[0].dataset.datasets[0].syntra_dataset.root_folder
             if auto_parse == 'all':
-                dataset_names = os.listdir(root_folder)
+                dataset_names = [x for x in os.listdir(root_folder) if g_pathmgr.isdir(os.path.join(root_folder, x))]
             elif isinstance(auto_parse, Iterable):
                 dataset_names = auto_parse
             else:
                 raise ValueError(f"Unknown auto_parse_datasets value {auto_parse}, should be 'all' or a list of dataset names.")
+            multipliers = self.data_conf.get(phase).get("multipliers", [1.0] * len(dataset_names))
             logging.info(f"Auto parsing datasets from {root_folder}, found {dataset_names}.")
+            
             datasets_cfg = []
             for i, dn in enumerate(dataset_names):
                 cur_dataset_cfg = copy.deepcopy(data_cfg[0].dataset.datasets[0])
                 cur_dataset_cfg.syntra_dataset.root_folder = os.path.join(root_folder, dn)
                 cur_dataset_cfg.multiplier = multipliers[i] 
                 datasets_cfg.append(cur_dataset_cfg)
+                if info_file_override is not None:
+                    cur_dataset_cfg.syntra_dataset.data_info_file = info_file_override
             data_cfg[0].dataset.datasets = datasets_cfg
 
     def _setup_components(self):
