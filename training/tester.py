@@ -55,8 +55,19 @@ from training.utils.train_utils import (
 
 from training.trainer import (
     CORE_LOSS_KEY, unwrap_ddp_if_wrapped,
-    LoggingConf, CheckpointConf, OptimConf
+    CheckpointConf, OptimConf
 )
+
+
+@dataclass
+class LoggingConf:
+    log_dir: str
+    log_level_primary: str = "INFO"
+    log_level_secondary: str = "ERROR"
+    log_scalar_frequency: int = 100
+    log_visual_frequency: int = 100
+    scalar_keys_to_log: Optional[Dict[str, Any]] = None
+    log_batch_stats: bool = False
 
 
 class Tester:
