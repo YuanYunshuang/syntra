@@ -72,8 +72,8 @@ def main(args) -> None:
         f.write(OmegaConf.to_yaml(cfg_resolved, resolve=True))
     
     # Priotrize cmd line args
-    cfg.dataset.split = (
-        args.data_split if args.data_split is not None else cfg.dataset.split
+    cfg.dataset.train_split = (
+        args.data_train_split if args.data_train_split is not None else cfg.dataset.train_split
     )
     cfg.dataset.root = (
         args.data_root if args.data_root is not None else cfg.dataset.root
@@ -104,7 +104,7 @@ if __name__=="__main__":
                         help="max training epochs")
     parser.add_argument("-nw", "--num-workers", type=int, default=None,
                         help="number of workers for data loading")
-    parser.add_argument("-split", "--data_split", type=int, default=None, 
+    parser.add_argument("-split", "--data_train_split", type=int, default=None, 
                         help="a json file that list all data samples for training")
     parser.add_argument("-dset", "--dataset", type=str, default=None, 
                         help="dataset names in a row, split by comma, if not set, all datasets will be used")
