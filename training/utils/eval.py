@@ -116,6 +116,7 @@ class GlobalEvaluator:
 
     def eval(self):
         sumarized_results = {}
+        mean_cls_results = []
         overall_results = Evaluator()
         for dataset, eval_dict in self.eval_dict.items():
             main_dataname = dataset.split('.')[0]
@@ -135,8 +136,13 @@ class GlobalEvaluator:
             self.logger.write(f"Summarized Results for dataset: {dataset}\n")
             for cls_name, evaluator in data_res.items():
                 iou, prec, rec, acc = evaluator.eval()
+                mean_cls_results.append([iou, prec, rec, acc])
                 self.logger.write(f"  [SUM] Class: {cls_name} - IoU: {iou:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}, Accuracy: {acc:.4f}\n")
-            
+        # calculate mean results over all classes
+        self.logger.write(f"\n")
+        mean_cls_results = np.array(mean_cls_results).mean(axis=0)
+        self.logger.write(f"Mean Results across all classes - IoU: {mean_cls_results[0]:.4f}, Precision: {mean_cls_results[1]:.4f}, Recall: {mean_cls_results[2]:.4f}, Accuracy: {mean_cls_results[3]:.4f}\n")
+        
         # Overall results
         iou, prec, rec, acc = overall_results.eval()
         self.logger.write(f"Overall Results across all datasets - IoU: {iou:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}, Accuracy: {acc:.4f}\n")
