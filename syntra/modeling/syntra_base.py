@@ -164,12 +164,15 @@ class SynTraBase(torch.nn.Module):
             tgt_features, tgt_pos, notions, dense_prompt_embeddings, high_res_features
         )
         outdict = self._construct_outdict(res)
-        if self.refine_masks and kwargs.get("epoch", 0) > 200:
+        if self.refine_masks:
             low_res_masks = res[0]
             refined_res = self.mask_refine_decoder(
                 tgt_features, tgt_pos, low_res_masks, high_res_features
             )
-            outdict.update(self._construct_outdict(refined_res, is_refined=True))
+            if self.freeze_stage1:
+                outdict = self._construct_outdict(refined_res)
+            else:
+                outdict.update(self._construct_outdict(refined_res, is_refined=True))
 
         return outdict
 

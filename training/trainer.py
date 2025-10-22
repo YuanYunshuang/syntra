@@ -74,6 +74,7 @@ class OptimConf:
     amp: Optional[Dict[str, Any]] = None
     gradient_clip: Any = None
     gradient_logger: Any = None
+    reset_epoch_on_load: bool = False
 
     def __post_init__(self):
         # amp
@@ -353,19 +354,20 @@ class SingleGPUTrainer:
             ignore_missing_keys=self.checkpoint_conf.skip_saving_parameters,
         )
 
-        self.optim.optimizer.load_state_dict(checkpoint["optimizer"])
-        self.loss.load_state_dict(checkpoint["loss"], strict=True)
-        self.epoch = checkpoint["epoch"]
-        self.steps = checkpoint["steps"]
-        self.ckpt_time_elapsed = checkpoint.get("time_elapsed")
+        if not self.optim_conf.reset_epoch_on_load:
+            self.optim.optimizer.load_state_dict(checkpoint["optimizer"])
+            self.loss.load_state_dict(checkpoint["loss"], strict=True)
+            self.epoch = checkpoint["epoch"] 
+            self.steps = checkpoint["steps"]
+            self.ckpt_time_elapsed = checkpoint.get("time_elapsed")
 
-        if self.optim_conf.amp.enabled and "scaler" in checkpoint:
-            self.scaler.load_state_dict(checkpoint["scaler"])
+            if self.optim_conf.amp.enabled and "scaler" in checkpoint:
+                self.scaler.load_state_dict(checkpoint["scaler"])
 
-        self.best_meter_values = checkpoint.get("best_meter_values", {})
+            self.best_meter_values = checkpoint.get("best_meter_values", {})
 
-        if "train_dataset" in checkpoint and self.train_dataset is not None:
-            self.train_dataset.load_checkpoint_state(checkpoint["train_dataset"])
+            if "train_dataset" in checkpoint and self.train_dataset is not None:
+                self.train_dataset.load_checkpoint_state(checkpoint["train_dataset"])
 
     def save_checkpoint(self, epoch, checkpoint_names=None):
         checkpoint_folder = self.checkpoint_conf.save_dir
@@ -511,7 +513,7 @@ class SingleGPUTrainer:
         # gradients
         if self.steps[phase] % self.accumulate_grad_batches == 0:
             self.optim.zero_grad(set_to_none=True)
-        with torch.cuda.amp.autocast(
+        with torch.amp.autocast("cuda",
             enabled=self.optim_conf.amp.enabled,
             dtype=get_amp_type(self.optim_conf.amp.amp_dtype),
         ):

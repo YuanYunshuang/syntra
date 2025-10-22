@@ -31,6 +31,7 @@ class SynTraTrain(SynTraBase):
         image_encoder,
         notion_attention=None,
         freeze_image_encoder=False,
+        freeze_stage1=False,
         dora_rank: int=0, # 0 for not using dora
         **kwargs,
     ):
@@ -38,12 +39,20 @@ class SynTraTrain(SynTraBase):
         # A random number generator with a fixed initial seed across GPUs
         self.rng = np.random.default_rng(seed=42)
         self.dora_rank = dora_rank
+        self.freeze_stage1 = freeze_stage1
 
         if freeze_image_encoder:
             for p in self.image_encoder.parameters():
                 p.requires_grad = False
+        if freeze_stage1:
+            self._freeze_stage1()
         
         self.visual_dict = {}
+    
+    def _freeze_stage1(self):
+        for name, p in self.named_parameters():
+            if "refine" not in name:
+                p.requires_grad = False
         
     def dora_adapt(self):
         r = self.dora_rank
@@ -60,6 +69,8 @@ class SynTraTrain(SynTraBase):
                          f"Trainable: {num_trainable_params}," +
                          f"Total: {total_params}, " + 
                          f"Ratio: {num_trainable_params / total_params * 100: .02f}%.")
+        if self.freeze_stage1:
+            self._freeze_stage1()
 
     def forward(self, input: BatchedSrcTgtDatapoint, **kwargs):
         # precompute image features on all frames 
