@@ -2,7 +2,7 @@
 
 scratch:
   resolution: 384
-  train_batch_size: 16
+  train_batch_size: 8
   val_batch_size: 8
   num_train_workers: 4
   num_src: 3
@@ -103,7 +103,7 @@ trainer:
         downsample_rate: 1
         dropout: 0.1
         kv_in_dim: 256
-    freeze_image_encoder: true
+    freeze_image_encoder: false
     # input image resolution
     image_size: ${scratch.resolution}
     # dora rank for image encoder, dora_rank=0 means no dora
