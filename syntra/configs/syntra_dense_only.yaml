@@ -308,3 +308,9 @@ tester:
     log_dir: ${launcher.experiment_log_dir}/logs
 
   checkpoint: ${trainer.checkpoint}
+
+  evaluator:
+    _target_: training.utils.eval.GlobalEvaluator
+    data_root_dir: ${dataset.root}
+    save_results: true
+    results_dir: ${launcher.experiment_log_dir}/test_results
