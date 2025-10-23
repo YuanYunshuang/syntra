@@ -35,6 +35,7 @@ def update_pil_palette(pil_img, color_map):
     pil_img.putpalette(palette)
     return pil_img
 
+
 def update_lbl_palette(root_dir):
     colors = [
         [0, 0, 0],        # background

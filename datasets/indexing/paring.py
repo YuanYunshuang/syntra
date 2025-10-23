@@ -147,9 +147,9 @@ def visualize_generateion(dataset, pairing_info, mode='inter', n_vis = 5):
 
 
 if __name__=="__main__":
-    data_root = "/home/yuan/data/HisMap/syntra384_sheets"
-    for tgt_info_file in ['test_samples.txt', 'selected_100.json', 'val_samples.txt']:
+    data_root = "/koko/datasets/SMOL_syntra"
+    for tgt_info_file in ['test_samples.txt', 'train_100shot.txt', 'val_10shot.txt']:
         generate_src_tgt_inter_cls(data_root,
                                 tgt_info_file=tgt_info_file,
-                                src_info_file='selected_100.json',
+                                src_info_file='train_100shot.txt',
                                 k=8, visualize=False)

@@ -18,8 +18,17 @@ from PIL import Image
 from data_utils import read_tiff
 
 
-train_img_size = 384
-npix = train_img_size * train_img_size
+semantic_to_class_id = {
+    'background': 0,
+    'forest': 1,
+    'grassland': 2,
+    'settlement': 3,
+    'water': 4,
+    'standing_water': 5,
+    'railway': 6,
+    'vineyard': 7,
+    'nonlabeled': 255
+}
 
 
 # step 1
@@ -41,11 +50,27 @@ def generate_data_info(root_dir, dataset_list=None):
         num_cls = len(color_map)
         for lbl_file in lbl_files:
             name = lbl_file.split('.')[0]
-            lbl = np.array(Image.open(os.path.join(lbl_dir, lbl_file)))
+            lbl = Image.open(os.path.join(lbl_dir, lbl_file)).convert("P")
+            palette = lbl.getpalette()
+            idx_to_color = {i: tuple(palette[i*3:i*3+3]) for i in range(256)}
+            # convert palette index to rgb color
+            lbl = np.array(lbl)
+            npix = lbl.shape[0] * lbl.shape[1]
+
+            def find_class_id_by_color(color):
+                for i, c in idx_to_color.items():
+                    if tuple(c) == tuple(color):
+                        return i
+                return None
+
             dinfo[f'{dataset_name}.{name}'] = {}
             for semantic, color in color_map.items():
-                color = np.array(color).reshape(1, 1, 3)
-                cur_mask = (color == lbl).all(axis=-1) 
+                cls_id = find_class_id_by_color(color)
+                if cls_id is None:
+                    print(f"Warning: color {color} for class {semantic} not found in palette!")
+                    dinfo[f'{dataset_name}.{name}'][semantic] = 0.0
+                    continue
+                cur_mask = lbl == cls_id
                 dinfo[f'{dataset_name}.{name}'][semantic] = cur_mask.sum() / npix
         with open(dinfo_filename, 'w') as f:
             json.dump(dinfo, f, indent=4)
@@ -101,7 +126,7 @@ def train_test_val_split(root_dir, ratios={'train':0.7, 'test':0.2, 'val': 0.1},
                 f.write("\n")
 
 
-def select_roi_samples(dinfo_file, num_samples_per_cls_per_sheet=1, min_ratio=0.1, max_ratio=0.8, plan="A", save_path=None):
+def select_roi_samples(dinfo_file, num_samples_per_cls_per_sheet=1, min_ratio=0.1, max_ratio=0.9, plan="A", save_path=None):
     """
     Select regions of interest (ROI) samples for labeling. 
     Normally, for real use case we should select them manually.
@@ -261,7 +286,9 @@ def select_fewshot_samples(data_root, dataset_list=None, nshot=10, plan="A"):
 
 if __name__ == "__main__":
     data_root = "/home/yuan/data/HisMap/syntra384_sheets"
-    dataset_list = [x for x in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, x))] # ['donauwoerth.a', 'donauwoerth.b']
+    # dataset_list = [x for x in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, x))] # ['donauwoerth.a', 'donauwoerth.b']
     # generate_data_info(data_root, dataset_list=dataset_list)
     # train_test_val_split(data_root, dataset_list=dataset_list)
-    select_fewshot_samples(data_root, nshot=100, dataset_list=dataset_list, plan="B")
+    # select_fewshot_samples(data_root, nshot=100, dataset_list=dataset_list, plan="B")
+
+    generate_data_info("/koko/datasets/SMOL_syntra")
