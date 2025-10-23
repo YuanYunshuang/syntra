@@ -114,7 +114,7 @@ def generate_split(input_dir, output_dir, split):
             subdir = f"{dataset}.{sheet}"
             if subdir not in sample_dict:
                 sample_dict[subdir] = []
-            sample_dict[subdir].append(f"{k1}_{k2}")
+            sample_dict[subdir].append(f"{subdir}.{k1}_{k2}")
         return sample_dict
 
     def save_split_files_to_txt(sample_dict, filename):
@@ -151,5 +151,5 @@ if __name__ == "__main__":
     output_directory = "/koko/datasets/SMOL_syntra"
     # generate_smol_dataset(input_directory, output_directory)
     # generate_color_maps(output_directory)
-
-    generate_split(input_directory, output_directory, split="test")
+    for k in ["train", "val_10shot", "test", "train_100shot", "train_50shot", "train_10shot", "val_50shot", "val_100shot"]:
+        generate_split(input_directory, output_directory, split=k)
