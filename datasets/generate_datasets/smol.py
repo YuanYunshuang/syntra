@@ -2,6 +2,8 @@ import os
 from PIL import Image
 import numpy as np
 
+# set python path to the root directory
+os.sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 from datasets.generate_datasets.hameln import generate_colormap as gen_cmap_hameln
 from datasets.generate_datasets.donauwoerth import generate_colormap as gen_cmap_bayern
 from datasets.generate_datasets.siegfried import generate_colormap as gen_cmap_siegfried
@@ -37,9 +39,18 @@ def copy_img(src_path, dst_path):
 
 
 def generate_smol_dataset(input_dir, output_dir):
+    missing_files = []
+    for ds in os.listdir(output_dir):
+        ds_path = os.path.join(output_dir, ds)
+        img_path = os.path.join(ds_path, "imgs")
+        lbl_path = os.path.join(ds_path, "lbls")
+        for img_file in os.listdir(img_path):
+            lbl_file = img_file
+            if not os.path.exists(os.path.join(lbl_path, lbl_file)):
+                missing_files.append(f"{ds.split('.')[1]}_{img_file}")
     # split dataset according to mapping years and sheet ids
     # datasets = ['hameln', 'bayern', 'siegfried']
-    datasets = ['siegfried']
+    datasets = ['hameln']
     for dataset in datasets:
         print(f"Processing dataset: {dataset}")
         dataset_path = os.path.join(input_dir, dataset)
@@ -48,6 +59,8 @@ def generate_smol_dataset(input_dir, output_dir):
         lbl_dir = os.path.join(dataset_path, "lbls")
 
         for img_file in os.listdir(img_dir):
+            if not img_file in missing_files:
+                continue
             subdir, x, y = img_file.rsplit('_', 2)
             new_filename = f"{x}_{y}"
 
@@ -149,7 +162,7 @@ def generate_split(input_dir, output_dir, split):
 if __name__ == "__main__":
     input_directory = "/koko/datasets/SMOL"
     output_directory = "/koko/datasets/SMOL_syntra"
-    # generate_smol_dataset(input_directory, output_directory)
+    generate_smol_dataset(input_directory, output_directory)
     # generate_color_maps(output_directory)
-    for k in ["train", "val_10shot", "test", "train_100shot", "train_50shot", "train_10shot", "val_50shot", "val_100shot"]:
-        generate_split(input_directory, output_directory, split=k)
+    # for k in ["train", "val_10shot", "test", "train_100shot", "train_50shot", "train_10shot", "val_50shot", "val_100shot"]:
+    #     generate_split(input_directory, output_directory, split=k)

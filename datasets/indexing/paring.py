@@ -47,6 +47,7 @@ def generate_src_tgt_intra_cls(data_root, nshot, k=8):
         with open(save_path, 'w') as f:
             json.dump(pairing_info, f, indent=4)
 
+
 def load_samples(data_info_file, remove_repeat=True):
     if '.json' in data_info_file:
         with open(data_info_file, 'r') as f:
@@ -63,11 +64,13 @@ def load_samples(data_info_file, remove_repeat=True):
     return all_samples
 
 
-def generate_src_tgt_inter_cls(data_root, tgt_info_file, src_info_file=None, k=8, visualize=False):
+def generate_src_tgt_inter_cls(data_root, tgt_info_file, src_info_file=None, k=8, folder_list=None, visualize=False):
     img_encoder = DinoV2Encoder()
     if src_info_file is None:
         src_info_file = tgt_info_file
-    for dataset in os.listdir(data_root):
+    if folder_list is None:
+        folder_list = os.listdir(data_root)
+    for dataset in folder_list:
         if not os.path.isdir(os.path.join(data_root, dataset)):
             continue
 
@@ -147,9 +150,11 @@ def visualize_generateion(dataset, pairing_info, mode='inter', n_vis = 5):
 
 
 if __name__=="__main__":
-    data_root = "/koko/datasets/SMOL_syntra"
-    for tgt_info_file in ['test_samples.txt', 'train_100shot.txt', 'val_10shot.txt']:
+    data_root = "/home/yuan/data/syntra/remote_sensing"
+    for tgt_info_file in ['train_samples.txt', 'test_samples.txt', 'val_samples.txt']:
         generate_src_tgt_inter_cls(data_root,
                                 tgt_info_file=tgt_info_file,
-                                src_info_file='train_100shot.txt',
-                                k=8, visualize=False)
+                                src_info_file='train_samples.txt',
+                                folder_list=["oem.landcover_selection"],
+                                k=8, 
+                                visualize=True)
